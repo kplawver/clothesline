@@ -43,6 +43,7 @@ def main():
         if not args.output or not config.database.exists():
             parser.error("--output and an existing database are required")
         target = sqlite3.connect(args.output)
+        args.output.chmod(0o600)
         try:
             with sqlite3.connect(config.database) as source:
                 source.backup(target)

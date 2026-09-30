@@ -64,6 +64,35 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 """
 
+MESSAGE_BUS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_presence (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id), online_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL, offline_at REAL
+);
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, project_id TEXT REFERENCES projects(id),
+  session_id TEXT REFERENCES sessions(id), created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversations_recent ON conversations(created_at DESC);
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  sender_harness_id TEXT NOT NULL REFERENCES harnesses(id),
+  sender_agent_id TEXT NOT NULL REFERENCES agents(id),
+  recipient_agent_id TEXT REFERENCES agents(id),
+  client_message_id TEXT NOT NULL, body TEXT NOT NULL, created_at REAL NOT NULL,
+  UNIQUE(sender_agent_id, client_message_id)
+);
+CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,id);
+CREATE TABLE IF NOT EXISTS message_deliveries (
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  recipient_agent_id TEXT NOT NULL REFERENCES agents(id), acknowledged_at REAL,
+  PRIMARY KEY(message_id, recipient_agent_id)
+);
+CREATE INDEX IF NOT EXISTS deliveries_inbox ON message_deliveries(recipient_agent_id, acknowledged_at, message_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(body, message_id UNINDEXED, tokenize='porter unicode61');
+"""
+
 
 def uid() -> str:
     return uuid.uuid4().hex
@@ -72,10 +101,13 @@ def uid() -> str:
 class Store:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path.parent.chmod(0o700)
+        if self.path.exists():
+            self.path.chmod(0o600)
         with self.connect() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError("Unsupported database version; upgrade Clothesline before opening it")
             db.executescript(SCHEMA)
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS vec_history USING vec0(embedding float[384])")
@@ -88,7 +120,11 @@ class Store:
             revision = db.execute("SELECT value FROM metadata WHERE key='embedding_revision'").fetchone()[0]
             if revision != EMBED_REVISION:
                 raise ValueError("Embedding revision changed; indexes must be rebuilt before continuing")
-            db.execute("PRAGMA user_version=1")
+            if version < 2:
+                # DDL is idempotent so a failed migration can safely be retried.
+                db.executescript(MESSAGE_BUS_SCHEMA)
+                db.execute("PRAGMA user_version=2")
+        self.path.chmod(0o600)
 
     @contextmanager
     def connect(self):
@@ -254,6 +290,7 @@ class Store:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM chunks_fts")
+            db.execute("DELETE FROM messages_fts")
             db.execute("DELETE FROM vec_history")
             db.execute("DELETE FROM vec_memory")
             db.execute("UPDATE chunks SET embedded=0")
@@ -263,6 +300,8 @@ class Store:
                            ((row["content"], row["id"]) for row in rows))
             db.executemany("INSERT INTO jobs(kind,source_id,next_at) VALUES ('embed',?,?)",
                            ((str(row["id"]), time.time()) for row in rows))
+            db.executemany("INSERT INTO messages_fts(body,message_id) VALUES (?,?)",
+                           ((row["body"], row["id"]) for row in db.execute("SELECT id,body FROM messages")))
             return len(rows)
 
     def search_rows(self, query: str, project_key: str | None = None, category: str | None = None, limit: int = 10, vector: list[float] | None = None) -> list[dict]:

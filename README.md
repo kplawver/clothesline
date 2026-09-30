@@ -64,7 +64,7 @@ Zed can register Clothesline as a remote MCP server through `context_servers`:
 
 The local development server must already be running. If Zed loaded this setting before the server started, restart the MCP connection in Zed's Settings → AI → MCP Servers. A Zed Agent conversation has successfully registered a harness and agent, started a session, submitted a test turn, and recalled it by keyword search. Adding the server exposes its tools but does not automatically record Zed's conversation turns.
 
-Pi/Oh My Pi does not expose an MCP client in the installed Pi version inspected while building Clothesline. It needs an MCP bridge extension (or explicit adapter) before Pi can call these tools. Merely putting the MCP URL in a Pi settings file does not work. Zed and Claude Code are the two verified MCP clients; Pi integration remains separate work.
+Oh My Pi (OMP 18.4.4) supports HTTP MCP servers and discovers Clothesline from this checkout's project-scoped `.mcp.json`. OMP has successfully used `search_sessions` to retrieve Zed's turn with semantic search available. Zed, Claude Code and OMP are verified MCP clients. The separate Pi CLI (`pi`) does not include a built-in MCP client in the installed version inspected; it would need an adapter.
 
 The official Python MCP SDK serves both `2025-11-25` and `2026-07-28`; older clients negotiate with the legacy initialization handshake. Neither MCP transport sessions nor model-facing harness names act as authenticated identities.
 
@@ -74,6 +74,14 @@ After 72 hours without new turns, a daily sweep schedules an archive job. A gene
 
 FTS5 handles literal keyword queries; sqlite-vec adds local semantic search when embeddings are installed and processed. A live Zed-submitted turn was retrieved by a paraphrase with no matching keywords. A synthetic multi-agent session was summarized and archived locally with `llama-cli` (Qwen3-1.7B-Q8_0); model quality on real long sessions remains to be evaluated. Search results show whether semantic search was available. The web UI uses keyword search. All content remains on this machine except model downloads from Hugging Face.
 
+## Agent conversations (Phase Two)
+
+The message bus uses the same persistent harness and agent IDs as sessions. After `register_agent`, call `agent_online`. Call `agent_heartbeat` after 15 minutes without other bus activity, and `agent_offline` when the agent exits. One hour without contact makes presence stale; call `agent_online` again. A tool description cannot itself schedule a heartbeat or wake a harness to poll.
+
+An online agent can `open_conversation`, optionally associating a project or session, then `send_message` with a stable `client_message_id` for safe retries. A specified recipient gets a durable delivery even while offline; a message without a recipient broadcasts to agents online **when it is sent**. Future registrations do not receive earlier broadcasts. The sender is not a recipient of its own broadcasts.
+
+Agents call `poll_messages` and `ack_message` after processing each delivery. Polling without acknowledgment can return the same message again: delivery is **at least once**, not exactly once. Use `next_cursor` only to paginate a large backlog and start the next poll at `after_id=0` so unacknowledged messages are retried. Message bodies are retained and indexed for keyword search independently of the three-day session-turn retention. `get_conversation`, `search_messages`, and the read-only `/conversations` and `/agents` pages expose history and presence. Messages do not automatically become decisions or preferences.
+
 ## Release work remaining
 
-The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. Still to do: test Intel, add future database migrations beyond initial schema version 1, evaluate summaries on longer real sessions, and add a Pi adapter. Clothesline is licensed under the MIT License; see `LICENSE`.
+The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. A v1→v2 SQLite migration preserves existing memories while adding conversations and delivery state. Still to do: test Intel, evaluate summaries on longer real sessions, and optionally add an adapter for the separate Pi CLI. Clothesline is licensed under the MIT License; see `LICENSE`.
