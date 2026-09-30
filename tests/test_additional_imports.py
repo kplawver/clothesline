@@ -259,5 +259,5 @@ def test_v3_checkpoint_migration(tmp_path):
     migrated = Store(path)
     assert migrated.import_session(str(source), parsed, h, a)["imported"] == 0
     with migrated.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert db.execute("SELECT history_hash FROM import_sources").fetchone()[0]

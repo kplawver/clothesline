@@ -45,7 +45,7 @@ def test_v1_upgrade_preserves_sessions_and_is_repeatable(tmp_path):
     assert upgraded.get_session(session)["turns"][0]["content"] == "Original history"
     assert Store(path).get_session(session)["id"] == session
     with upgraded.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
     MessageBus(upgraded).online(harness, agent)
 
 

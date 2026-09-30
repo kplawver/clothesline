@@ -1,0 +1,14 @@
+{
+  "name": "clothesline",
+  "description": "Local shared memory integration for coding agents",
+  "owner": {
+    "name": "Kevin Lawver"
+  },
+  "plugins": [
+    {
+      "name": "clothesline",
+      "source": "./plugins/claude-code",
+      "description": "Claude Code MCP tools, memory skill, and opt-in turn capture"
+    }
+  ]
+}

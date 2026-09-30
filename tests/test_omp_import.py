@@ -145,6 +145,6 @@ def test_v2_migration_preserves_bus_and_sessions(tmp_path):
         db.execute("PRAGMA user_version=2")
     migrated = Store(path)
     with migrated.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert db.execute("SELECT count(*) FROM agent_presence").fetchone()[0] == 1
     assert Store(path).register_agent(harness, "a") == agent

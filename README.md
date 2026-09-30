@@ -2,7 +2,7 @@
 
 Local, shared memory for coding agents. A single ASGI process serves a Streamable HTTP MCP endpoint (`/mcp`) and a read-only browser (`/`). Submitted session turns are searchable for three days after inactivity; then they are summarized and raw turns are removed. Decisions and preferences remain versioned until explicitly superseded.
 
-**Status: first macOS release; Apple Silicon tested, Intel not yet tested.** No harness automatically streams its conversation merely by connecting to MCP. Clients must explicitly submit turns, use an adapter, or opt in to an existing-session importer. Never submit secrets or private reasoning as text blocks.
+**Status: first macOS release; Apple Silicon tested, Intel not yet tested.** Connecting to MCP does not capture sessions. Claude Code offers optional, per-project hook capture; other clients must explicitly submit turns or opt in to an existing-session importer. Never submit secrets or private reasoning as text blocks.
 
 ## Install with Homebrew
 
@@ -94,7 +94,26 @@ Omit `--dry-run` to import. `--list` prints only IDs, not titles or message cont
 
 Only visible user and assistant text is copied. Structured thinking/reasoning, system prompts, tool arguments and results, attachments/images, and alternative branches are excluded. **This is not a secret scanner:** visible text can still contain secrets; review sessions before importing. Each batch of turns and its checkpoint is atomic, and re-imports add only new turns. If previously imported text changes or a branch is replaced, Clothesline refuses to silently mix histories. Once a session is archived, new turns start a separate segment. Session files are limited to 50 MiB and individual visible turns to 250,000 characters.
 
-Original harness files/databases are never modified by Clothesline's three-day retention. Historical imports may be archived at the next daily sweep based on their original timestamps (Zed uses the thread's update time). There is no background scanning or automatic capture.
+Original harness files/databases are never modified by Clothesline's three-day retention. Historical imports may be archived at the next daily sweep based on their original timestamps (Zed uses the thread's update time). There is no background scanning of saved session files.
+
+## Claude Code plugin: opt-in live capture
+
+Install Clothesline with Homebrew and start its service first. Then install the Claude Code plugin, which bundles the MCP connection, a memory skill (`/clothesline:memory`), and hooks for `UserPromptSubmit` and `Stop`:
+
+```sh
+claude plugin marketplace add kplawver/clothesline
+claude plugin install clothesline@clothesline --scope local  # or --scope user
+clothesline capture-claude --enable --project /absolute/path/to/project
+clothesline capture-claude --project /absolute/path/to/project  # show status
+```
+
+Restart Claude Code after installation. If the project also has a Clothesline `.mcp.json`, the plugin may expose a second connection; keep only one MCP configuration. Installing the plugin alone **does not enable capture**: the allowlist is stored at `<data_dir>/claude-capture.json` (mode 0600), with **exact project directory matches**. The hooks submit the visible user prompt and final assistant text to Clothesline's existing turn storage. They do not read the transcript, thinking, tool calls, tool results, or images. Claude Code writes its transcript asynchronously; the hooks use the event's current text fields rather than relying on a possibly stale file. The hook fails open if capture fails and never blocks a user prompt. A harmless live hook test captured both roles in an isolated database.
+
+```sh
+clothesline capture-claude --disable --project /absolute/path/to/project
+```
+
+Disabling stops **new** capture; it does not delete turns already stored, archived summaries, or backups. Visible prompts and final replies can contain secrets, including pasted text. The plugin does not scan or redact them; only enable projects you're comfortable storing locally. Existing manually imported Claude sessions must not be captured again (and vice versa); Clothesline refuses this combination for the same session. This plugin does not automate message-bus presence, heartbeats, or polling. For development, load `plugins/claude-code` with `claude --plugin-dir /path/to/clothesline/plugins/claude-code`. The bundled MCP URL assumes the default loopback port 19004; configure the server separately if you change ports.
 
 ## Agent conversations (Phase Two)
 
@@ -106,4 +125,4 @@ Agents call `poll_messages` and `ack_message` after processing each delivery. Po
 
 ## Release work remaining
 
-The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. SQLite migrations through v4 preserve existing memories while adding conversations, delivery state, and verified session-import checkpoints. Still to do: test Intel, evaluate summaries on longer real sessions, and optionally add an adapter for the separate Pi CLI. Clothesline is licensed under the MIT License; see `LICENSE`.
+The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. SQLite migrations through v5 preserve existing memories while adding conversations, delivery state, verified session-import checkpoints, and hook capture. Still to do: test Intel, evaluate summaries on longer real sessions, and optionally add an adapter for the separate Pi CLI. Clothesline is licensed under the MIT License; see `LICENSE`.

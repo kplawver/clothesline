@@ -102,6 +102,21 @@ CREATE TABLE IF NOT EXISTS import_sources (
 );
 """
 
+CAPTURE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS capture_sources (
+  source_key TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+  project_key TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id),
+  current_prompt_key TEXT, current_prompt_hash TEXT,
+  prompt_answered INTEGER NOT NULL DEFAULT 0, next_prompt INTEGER NOT NULL DEFAULT 0,
+  segment INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS capture_events (
+  source_key TEXT NOT NULL REFERENCES capture_sources(source_key),
+  source_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  PRIMARY KEY(source_key, source_id)
+);
+"""
+
 
 def uid() -> str:
     return uuid.uuid4().hex
@@ -116,7 +131,7 @@ class Store:
             self.path.chmod(0o600)
         with self.connect() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4):
+            if version not in (0, 1, 2, 3, 4, 5):
                 raise ValueError("Unsupported database version; upgrade Clothesline before opening it")
             db.executescript(SCHEMA)
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS vec_history USING vec0(embedding float[384])")
@@ -141,6 +156,9 @@ class Store:
                 if "history_hash" not in columns:
                     db.execute("ALTER TABLE import_sources ADD COLUMN history_hash TEXT")
                 db.execute("PRAGMA user_version=4")
+            if version < 5:
+                db.executescript(CAPTURE_SCHEMA)
+                db.execute("PRAGMA user_version=5")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -308,6 +326,79 @@ class Store:
                 self._delete_chunks(db, "hot", row[0])
             db.execute("DELETE FROM turns WHERE session_id=?", (session_id,))
             db.execute("UPDATE sessions SET summary_id=?, archived_at=? WHERE id=?", (summary_id, now, session_id))
+            return True
+
+    def was_captured_claude(self, project_key: str, claude_session_id: str) -> bool:
+        with self.connect() as db:
+            return db.execute("SELECT 1 FROM capture_sources WHERE source_key=?",
+                              (f"claude-hook:{project_key}:{claude_session_id}",)).fetchone() is not None
+
+    def capture_claude(self, project_key: str, claude_session_id: str, prompt_id: str | None,
+                       role: str, content: str, transcript_path: str | None = None) -> bool:
+        """Record an explicit hook event using the same turn indexes and retention as MCP."""
+        if role not in {"user", "assistant"} or not content.strip() or len(content) > 250_000:
+            raise ValueError("Capture requires visible user/assistant text of at most 250,000 characters")
+        if not claude_session_id or len(claude_session_id) > 128 or not project_key:
+            raise ValueError("Capture requires a Claude session ID and project")
+        if prompt_id and len(prompt_id) > 128:
+            raise ValueError("Claude prompt ID is too long")
+        harness_id = self.register_harness("clothesline:claude:hook", "Claude Code")
+        agent_id = self.register_agent(harness_id, f"claude-session:{claude_session_id}")
+        source_key = f"claude-hook:{project_key}:{claude_session_id}"
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if transcript_path and db.execute("SELECT 1 FROM import_sources WHERE source_path=?",
+                                              (transcript_path,)).fetchone():
+                raise ValueError("Claude session was already imported manually")
+            row = db.execute("SELECT * FROM capture_sources WHERE source_key=?", (source_key,)).fetchone()
+            if row and (row["project_key"] != project_key or row["agent_id"] != agent_id):
+                raise ValueError("Capture source identity changed")
+            prompt_key = prompt_id or (row["current_prompt_key"] if row else None)
+            if role == "user" and not prompt_key:
+                prompt_key = "local:1"
+            elif role == "user" and not prompt_id and row and (row["prompt_answered"] or row["current_prompt_hash"] != digest):
+                prompt_key = f"local:{row['next_prompt'] + 1}"
+            if not prompt_key:
+                raise ValueError("Cannot attribute assistant message without a prompt")
+            source_id = f"{role}:{prompt_key}" if role == "user" else f"assistant:{prompt_key}:{digest}"
+            if row:
+                previous = db.execute("SELECT content_hash FROM capture_events WHERE source_key=? AND source_id=?",
+                                      (source_key, source_id)).fetchone()
+                if previous:
+                    if previous[0] != digest:
+                        raise ValueError("Claude prompt ID was reused with different text")
+                    return False
+            session_id = row["session_id"] if row else None
+            session = db.execute("SELECT archived_at,project_id FROM sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
+            segment = row["segment"] if row else 0
+            if session is None or session["archived_at"] is not None:
+                if session is not None:
+                    segment += 1
+                session_id, now = uid(), time.time()
+                project_id = self._project(db, project_key)
+                db.execute("INSERT INTO sessions(id,harness_id,agent_id,project_id,started_at,last_turn_at) "
+                           "VALUES (?,?,?,?,?,?)", (session_id, harness_id, agent_id, project_id, now, now))
+            elif session["project_id"] != self._project(db, project_key):
+                raise ValueError("Captured project changed")
+            if row:
+                db.execute("UPDATE capture_sources SET session_id=?,segment=? WHERE source_key=?",
+                           (session_id, segment, source_key))
+            else:
+                db.execute("INSERT INTO capture_sources(source_key,session_id,project_key,agent_id) VALUES (?,?,?,?)",
+                           (source_key, session_id, project_key, agent_id))
+            if role == "user":
+                next_prompt = row["next_prompt"] if row else 0
+                if prompt_key.startswith("local:"):
+                    next_prompt = int(prompt_key.split(":", 1)[1])
+                db.execute("UPDATE capture_sources SET current_prompt_key=?,current_prompt_hash=?,prompt_answered=0,next_prompt=? "
+                           "WHERE source_key=?", (prompt_key, digest, next_prompt, source_key))
+            else:
+                db.execute("UPDATE capture_sources SET prompt_answered=1,current_prompt_key=? WHERE source_key=?",
+                           (prompt_key, source_key))
+            db.execute("INSERT INTO capture_events VALUES (?,?,?)", (source_key, source_id, digest))
+            self._write_turn(db, session_id, self._project(db, project_key), harness_id,
+                             agent_id, source_id, role, content.strip(), time.time())
             return True
 
     @staticmethod

@@ -1,0 +1,8 @@
+{
+  "name": "clothesline",
+  "version": "0.5.0",
+  "description": "Local shared memory tools and opt-in Claude Code turn capture",
+  "author": {
+    "name": "Kevin Lawver"
+  }
+}
