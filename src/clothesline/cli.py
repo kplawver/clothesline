@@ -14,7 +14,7 @@ def main():
     parser = argparse.ArgumentParser(prog="clothesline")
     parser.add_argument("command", choices=["serve", "setup", "status", "doctor", "backup", "rebuild-index",
                                             "import-omp", "import-pi", "import-claude", "import-codex",
-                                            "import-zed", "import-opencode", "capture-claude"])
+                                            "import-zed", "import-opencode", "capture-claude", "capture-omp"])
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path, help="Backup destination")
     parser.add_argument("--source", type=Path, help="OMP main-session JSONL file to import")
@@ -44,19 +44,20 @@ def main():
             with Store(config.database).connect() as db:
                 db.execute("UPDATE jobs SET next_at=?,error=NULL WHERE kind IN ('embed','archive')", (time.time(),))
         print("Local models installed; pending jobs are ready to retry")
-    elif args.command == "capture-claude":
+    elif args.command in {"capture-claude", "capture-omp"}:
         from clothesline.capture import capture_hook, enabled, set_enabled
 
+        harness = args.command.removeprefix("capture-")
         if args.hook:
             try:
-                capture_hook(config, json.load(sys.stdin))
-            except Exception as error:  # noqa: BLE001 - Capture must never interrupt Claude's turn.
+                capture_hook(config, json.load(sys.stdin), harness)
+            except Exception as error:  # noqa: BLE001 - Capture must never interrupt an agent's turn.
                 print(f"Clothesline capture skipped ({type(error).__name__})", file=sys.stderr)
-            return  # An observational hook must never block Claude Code.
+            return  # An observational hook must never block the agent.
         if args.enable or args.disable:
-            active = set_enabled(config, args.project, args.enable)
+            active = set_enabled(config, args.project, args.enable, harness)
         else:
-            active = enabled(config, args.project)
+            active = enabled(config, args.project, harness)
         print(json.dumps({"project": str(args.project.resolve()), "capture_enabled": active}, indent=2))
     elif args.command.startswith("import-"):
         from clothesline.database_import import (
@@ -92,8 +93,8 @@ def main():
                               "database_changed": False}, indent=2))
         elif visible:
             store = Store(config.database)
-            if harness == "claude" and store.was_captured_claude(parsed.project_key, parsed.source_id):
-                raise ValueError("Claude session already captured by hook; manual import would duplicate it")
+            if harness in {"claude", "omp"} and store.was_captured_session(harness, parsed.project_key, parsed.source_id):
+                raise ValueError("Session already captured by hook; manual import would duplicate it")
             names = {"omp": "Oh My Pi", "pi": "Pi", "claude": "Claude Code",
                      "codex": "Codex", "zed": "Zed", "opencode": "OpenCode"}
             harness_id = store.register_harness(f"clothesline:{harness}:local-import", names[harness])

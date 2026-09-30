@@ -328,29 +328,36 @@ class Store:
             db.execute("UPDATE sessions SET summary_id=?, archived_at=? WHERE id=?", (summary_id, now, session_id))
             return True
 
-    def was_captured_claude(self, project_key: str, claude_session_id: str) -> bool:
+    def was_captured_session(self, harness: str, project_key: str, external_session_id: str) -> bool:
         with self.connect() as db:
             return db.execute("SELECT 1 FROM capture_sources WHERE source_key=?",
-                              (f"claude-hook:{project_key}:{claude_session_id}",)).fetchone() is not None
+                              (f"{harness}-hook:{project_key}:{external_session_id}",)).fetchone() is not None
 
-    def capture_claude(self, project_key: str, claude_session_id: str, prompt_id: str | None,
-                       role: str, content: str, transcript_path: str | None = None) -> bool:
-        """Record an explicit hook event using the same turn indexes and retention as MCP."""
+    def was_captured_claude(self, project_key: str, claude_session_id: str) -> bool:
+        return self.was_captured_session("claude", project_key, claude_session_id)
+
+    def capture_turn(self, harness: str, project_key: str, external_session_id: str,
+                     prompt_id: str | None, role: str, content: str,
+                     transcript_path: str | None = None) -> bool:
+        """Record a visible harness event using the same turn indexes and retention as MCP."""
+        if harness not in {"claude", "omp"}:
+            raise ValueError("Unsupported capture harness")
         if role not in {"user", "assistant"} or not content.strip() or len(content) > 250_000:
             raise ValueError("Capture requires visible user/assistant text of at most 250,000 characters")
-        if not claude_session_id or len(claude_session_id) > 128 or not project_key:
-            raise ValueError("Capture requires a Claude session ID and project")
+        if not external_session_id or len(external_session_id) > 128 or not project_key:
+            raise ValueError("Capture requires a session ID and project")
         if prompt_id and len(prompt_id) > 128:
-            raise ValueError("Claude prompt ID is too long")
-        harness_id = self.register_harness("clothesline:claude:hook", "Claude Code")
-        agent_id = self.register_agent(harness_id, f"claude-session:{claude_session_id}")
-        source_key = f"claude-hook:{project_key}:{claude_session_id}"
+            raise ValueError("Prompt ID is too long")
+        harness_id = self.register_harness(f"clothesline:{harness}:hook",
+                                           "Claude Code" if harness == "claude" else "Oh My Pi")
+        agent_id = self.register_agent(harness_id, f"{harness}-session:{external_session_id}")
+        source_key = f"{harness}-hook:{project_key}:{external_session_id}"
         digest = hashlib.sha256(content.encode()).hexdigest()
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if transcript_path and db.execute("SELECT 1 FROM import_sources WHERE source_path=?",
                                               (transcript_path,)).fetchone():
-                raise ValueError("Claude session was already imported manually")
+                raise ValueError("Session was already imported manually")
             row = db.execute("SELECT * FROM capture_sources WHERE source_key=?", (source_key,)).fetchone()
             if row and (row["project_key"] != project_key or row["agent_id"] != agent_id):
                 raise ValueError("Capture source identity changed")
@@ -367,7 +374,7 @@ class Store:
                                       (source_key, source_id)).fetchone()
                 if previous:
                     if previous[0] != digest:
-                        raise ValueError("Claude prompt ID was reused with different text")
+                        raise ValueError("Prompt ID was reused with different text")
                     return False
             session_id = row["session_id"] if row else None
             session = db.execute("SELECT archived_at,project_id FROM sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
@@ -400,6 +407,11 @@ class Store:
             self._write_turn(db, session_id, self._project(db, project_key), harness_id,
                              agent_id, source_id, role, content.strip(), time.time())
             return True
+
+    def capture_claude(self, project_key: str, claude_session_id: str, prompt_id: str | None,
+                       role: str, content: str, transcript_path: str | None = None) -> bool:
+        return self.capture_turn("claude", project_key, claude_session_id, prompt_id,
+                                 role, content, transcript_path)
 
     @staticmethod
     def _import_hash(turns: list[ImportedTurn]) -> str:

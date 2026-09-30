@@ -2,7 +2,7 @@
 
 Local, shared memory for coding agents. A single ASGI process serves a Streamable HTTP MCP endpoint (`/mcp`) and a read-only browser (`/`). Submitted session turns are searchable for three days after inactivity; then they are summarized and raw turns are removed. Decisions and preferences remain versioned until explicitly superseded.
 
-**Status: first macOS release; Apple Silicon tested, Intel not yet tested.** Connecting to MCP does not capture sessions. Claude Code offers optional, per-project hook capture; other clients must explicitly submit turns or opt in to an existing-session importer. Never submit secrets or private reasoning as text blocks.
+**Status: first macOS release; Apple Silicon tested, Intel not yet tested.** Connecting to MCP does not capture sessions. Claude Code and OMP offer optional per-project live capture; other clients must explicitly submit turns or opt in to an existing-session importer. Never submit secrets or private reasoning as text blocks.
 
 ## Install with Homebrew
 
@@ -114,6 +114,21 @@ clothesline capture-claude --disable --project /absolute/path/to/project
 ```
 
 Disabling stops **new** capture; it does not delete turns already stored, archived summaries, or backups. Visible prompts and final replies can contain secrets, including pasted text. The plugin does not scan or redact them; only enable projects you're comfortable storing locally. Existing manually imported Claude sessions must not be captured again (and vice versa); Clothesline refuses this combination for the same session. This plugin does not automate message-bus presence, heartbeats, or polling. For development, load `plugins/claude-code` with `claude --plugin-dir /path/to/clothesline/plugins/claude-code`. The bundled MCP URL assumes the default loopback port 19004; configure the server separately if you change ports.
+
+## OMP extension: opt-in live capture
+
+OMP supports native HTTP MCP; keep your normal Clothesline MCP connection for recall. The separate OMP package under `integrations/omp/` adds an extension and a `clothesline-memory` skill. Try it for one session from a checkout before installing it:
+
+```sh
+clothesline capture-omp --enable --project /absolute/path/to/project
+omp --extension /path/to/clothesline/integrations/omp/extensions/clothesline.ts
+# Or install the extension and skill package for future sessions:
+omp plugin install /path/to/clothesline/integrations/omp
+```
+
+The allowlist at `<data_dir>/omp-capture.json` is separate from Claude Code's. Installing or loading the extension alone **does not enable capture**. It records visible interactive/RPC user input and the final assistant response, dropping structured thinking, tool calls, tool output, and images. OMP print mode does not emit an input event; the extension uses the finalized user text from the completed turn instead. Ephemeral `--no-session` runs are not captured. A harmless real OMP print-mode run and simulated interactive event both captured only the intended turns in isolated databases. Do not manually import an already captured OMP session; Clothesline refuses duplicates. Disable new capture with `clothesline capture-omp --disable --project /absolute/path/to/project`. As with Claude, disabling does not erase stored history or backups.
+
+On the installed OMP 18.4.4, `omp plugin install` links the local package into the user-level plugin store even when `--scope project` is passed. Its uninstall command requires `bun` on `PATH`; use `--extension` for a one-session trial if you do not want a user-wide plugin link. The extension requires the `clothesline` CLI on `PATH` and never writes without per-project consent.
 
 ## Agent conversations (Phase Two)
 
