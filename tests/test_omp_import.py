@@ -126,8 +126,8 @@ def test_partial_tail_and_reasoning_only_turn(source):
 
 
 def test_rejects_malformed_or_oversized_content(source):
-    append(source, entry("message", "too-long", "last", "user", "x" * 100_001))
-    with pytest.raises(ValueError, match="100,000"):
+    append(source, entry("message", "too-long", "last", "user", "x" * 250_001))
+    with pytest.raises(ValueError, match="250,000"):
         parse_session(source)
     source.write_text('{"type": "session"}\nnot json\n')
     with pytest.raises(ValueError, match="Invalid session JSON"):
@@ -145,6 +145,6 @@ def test_v2_migration_preserves_bus_and_sessions(tmp_path):
         db.execute("PRAGMA user_version=2")
     migrated = Store(path)
     with migrated.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute("SELECT count(*) FROM agent_presence").fetchone()[0] == 1
     assert Store(path).register_agent(harness, "a") == agent

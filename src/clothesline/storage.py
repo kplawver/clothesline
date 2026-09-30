@@ -1,5 +1,6 @@
 """SQLite persistence. Content tables and search indexes live in the same database."""
 
+import hashlib
 import sqlite3
 import time
 import uuid
@@ -9,7 +10,7 @@ from pathlib import Path
 import sqlite_vec
 
 from clothesline.models import EMBED_MODEL, EMBED_REVISION
-from clothesline.omp_import import ImportedSession
+from clothesline.session_import import ImportedSession, ImportedTurn
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
@@ -115,7 +116,7 @@ class Store:
             self.path.chmod(0o600)
         with self.connect() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3):
+            if version not in (0, 1, 2, 3, 4):
                 raise ValueError("Unsupported database version; upgrade Clothesline before opening it")
             db.executescript(SCHEMA)
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS vec_history USING vec0(embedding float[384])")
@@ -135,6 +136,11 @@ class Store:
             if version < 3:
                 db.executescript(IMPORT_SCHEMA)
                 db.execute("PRAGMA user_version=3")
+            if version < 4:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(import_sources)")}
+                if "history_hash" not in columns:
+                    db.execute("ALTER TABLE import_sources ADD COLUMN history_hash TEXT")
+                db.execute("PRAGMA user_version=4")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -304,9 +310,17 @@ class Store:
             db.execute("UPDATE sessions SET summary_id=?, archived_at=? WHERE id=?", (summary_id, now, session_id))
             return True
 
-    def import_omp(self, source_path: str, parsed: ImportedSession,
-                   harness_id: str, agent_id: str) -> dict:
-        """Import active-branch visible turns atomically, resuming by OMP entry ID."""
+    @staticmethod
+    def _import_hash(turns: list[ImportedTurn]) -> str:
+        digest = hashlib.sha256()
+        for turn in turns:
+            digest.update(repr((turn.event_id, turn.role, turn.content)).encode())
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def import_session(self, source_path: str, parsed: ImportedSession,
+                       harness_id: str, agent_id: str) -> dict:
+        """Import visible turns atomically, resuming by stable source entry ID."""
         if not parsed.turns:
             return {"session_id": None, "imported": 0, "segment": 0}
         with self.connect() as db:
@@ -314,17 +328,19 @@ class Store:
             self._actor(db, harness_id, agent_id)
             existing = db.execute("SELECT * FROM import_sources WHERE source_path=?", (source_path,)).fetchone()
             if existing and existing["source_session_id"] != parsed.source_id:
-                raise ValueError("This OMP file now contains a different session")
+                raise ValueError("This source now contains a different session")
             event_ids = [turn.event_id for turn in parsed.turns]
             if existing and existing["last_event_id"] not in event_ids:
-                raise ValueError("The OMP active branch changed; importing it as the same history would be misleading")
+                raise ValueError("The source active branch changed; importing it as the same history would be misleading")
             first_new = event_ids.index(existing["last_event_id"]) + 1 if existing else 0
+            if existing and existing["history_hash"] and self._import_hash(parsed.turns[:first_new]) != existing["history_hash"]:
+                raise ValueError("Previously imported messages changed; no data imported")
             pending = [turn for turn in parsed.turns[first_new:] if turn.content]
             segment = existing["segment"] if existing else 0
             session_id = existing["session_id"] if existing else None
             current = db.execute("SELECT harness_id,agent_id,archived_at FROM sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
             if session_id and (not current or current["harness_id"] != harness_id or current["agent_id"] != agent_id):
-                raise ValueError("OMP source belongs to a different harness or agent")
+                raise ValueError("Source belongs to a different harness or agent")
             if pending:
                 if current and current["archived_at"] is not None:
                     segment += 1
@@ -338,19 +354,24 @@ class Store:
                                (session_id, harness_id, agent_id, project_id, started_at,
                                 max(turn.created_at for turn in pending)))
                 session = db.execute("SELECT project_id,last_turn_at FROM sessions WHERE id=?", (session_id,)).fetchone()
-                expected_project = db.execute("SELECT id FROM projects WHERE project_key=?", (parsed.project_key,)).fetchone()
-                if session["project_id"] != expected_project[0]:
-                    raise ValueError("OMP project changed for an already imported session")
+                expected_project = self._project(db, parsed.project_key)
+                if session["project_id"] != expected_project:
+                    raise ValueError("Project changed for an already imported session")
                 for turn in pending:
                     self._write_turn(db, session_id, session["project_id"], harness_id, agent_id,
                                      turn.event_id, turn.role, turn.content, turn.created_at)
             if existing:
-                db.execute("UPDATE import_sources SET session_id=?, last_event_id=?,segment=? WHERE source_path=?",
-                           (session_id, event_ids[-1], segment, source_path))
+                db.execute("UPDATE import_sources SET session_id=?, last_event_id=?,segment=?,history_hash=? WHERE source_path=?",
+                           (session_id, event_ids[-1], segment, self._import_hash(parsed.turns), source_path))
             else:
-                db.execute("INSERT INTO import_sources VALUES (?,?,?,?,?)",
-                           (source_path, parsed.source_id, session_id, event_ids[-1], segment))
+                db.execute("INSERT INTO import_sources(source_path,source_session_id,session_id,last_event_id,segment,history_hash) VALUES (?,?,?,?,?,?)",
+                           (source_path, parsed.source_id, session_id, event_ids[-1], segment,
+                            self._import_hash(parsed.turns)))
             return {"session_id": session_id, "imported": len(pending), "segment": segment}
+
+    def import_omp(self, source_path: str, parsed: ImportedSession,
+                   harness_id: str, agent_id: str) -> dict:
+        return self.import_session(source_path, parsed, harness_id, agent_id)
 
     def rebuild_indexes(self) -> int:
         """Restore derived FTS data and requeue vector embeddings without touching source content."""

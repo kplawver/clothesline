@@ -2,7 +2,7 @@
 
 Local, shared memory for coding agents. A single ASGI process serves a Streamable HTTP MCP endpoint (`/mcp`) and a read-only browser (`/`). Submitted session turns are searchable for three days after inactivity; then they are summarized and raw turns are removed. Decisions and preferences remain versioned until explicitly superseded.
 
-**Status: first macOS release; Apple Silicon tested, Intel not yet tested.** No harness automatically streams its conversation merely by connecting to MCP. Clients must explicitly submit turns, use an adapter, or opt in to the OMP file importer. Never submit secrets or private reasoning as text blocks.
+**Status: first macOS release; Apple Silicon tested, Intel not yet tested.** No harness automatically streams its conversation merely by connecting to MCP. Clients must explicitly submit turns, use an adapter, or opt in to an existing-session importer. Never submit secrets or private reasoning as text blocks.
 
 ## Install with Homebrew
 
@@ -74,18 +74,27 @@ After 72 hours without new turns, a daily sweep schedules an archive job. A gene
 
 FTS5 handles literal keyword queries; sqlite-vec adds local semantic search when embeddings are installed and processed. A live Zed-submitted turn was retrieved by a paraphrase with no matching keywords. A synthetic multi-agent session was summarized and archived locally with `llama-cli` (Qwen3-1.7B-Q8_0); model quality on real long sessions remains to be evaluated. Search results show whether semantic search was available. The web UI uses keyword search. All content remains on this machine except model downloads from Hugging Face.
 
-## Import an OMP session (opt-in)
+## Import existing sessions (opt-in)
 
-OMP has native MCP access for cooperative tool calls. To import an existing saved conversation without asking an agent to submit each turn, select a **main session** JSONL file under `~/.omp/agent/sessions/`:
+Connecting via MCP does **not** capture a session. Select **one** saved session at a time for manual import. First run `--dry-run` to preview counts without opening or changing the Clothesline database:
 
 ```sh
-clothesline import-omp --source /path/to/omp-session.jsonl --dry-run
-clothesline import-omp --source /path/to/omp-session.jsonl
+clothesline import-omp --source ~/.omp/agent/sessions/PROJECT/SESSION.jsonl --dry-run
+clothesline import-pi --source ~/.pi/agent/sessions/PROJECT/SESSION.jsonl --dry-run
+clothesline import-claude --source ~/.claude/projects/PROJECT/SESSION.jsonl --dry-run
+clothesline import-codex --source ~/.codex/sessions/YEAR/MONTH/DAY/SESSION.jsonl --dry-run
+
+clothesline import-zed --source ~/Library/'Application Support'/Zed/threads/threads.db --list
+clothesline import-zed --source ~/Library/'Application Support'/Zed/threads/threads.db --session-id THREAD_ID --dry-run
+clothesline import-opencode --source ~/.local/share/opencode/opencode.db --list
+clothesline import-opencode --source ~/.local/share/opencode/opencode.db --session-id SESSION_ID --dry-run
 ```
 
-Dry-run reports counts without opening or changing the database. The actual import records visible **user and assistant text on the active branch only**. Thinking/reasoning, system prompts, tool arguments and results, images, and alternative branches are excluded. Subagent/advisor files are not traversed; select the main session file, not a sidecar. This is not a secret scanner: review the visible text before importing private sessions. Imports are atomic and idempotent by source entry ID; a later run adds new turns. If the active branch changes away from previously imported turns, import refuses to merge incompatible history. If the previous segment was already archived, newly appended turns start a separate segment.
+Omit `--dry-run` to import. `--list` prints only IDs, not titles or message content. Pi and OMP import the active tree branch; Claude Code imports the main branch, or a **separately selected** `subagents/agent-*.jsonl` file with distinct agent attribution. Codex imports visible conversation events, not duplicate response items. Zed and OpenCode databases are opened **read-only** and require a specific thread/session ID. Zed does not provide per-message dates in its thread data, so imported turns use the thread snapshot's update time.
 
-Original OMP session files are never modified by Clothesline's three-day retention. Historical imported sessions can be archived at the next daily sweep based on their original timestamps. Import is **manual**, not a background monitor, and this first importer accepts one file at a time (up to 50 MiB).
+Only visible user and assistant text is copied. Structured thinking/reasoning, system prompts, tool arguments and results, attachments/images, and alternative branches are excluded. **This is not a secret scanner:** visible text can still contain secrets; review sessions before importing. Each batch of turns and its checkpoint is atomic, and re-imports add only new turns. If previously imported text changes or a branch is replaced, Clothesline refuses to silently mix histories. Once a session is archived, new turns start a separate segment. Session files are limited to 50 MiB and individual visible turns to 250,000 characters.
+
+Original harness files/databases are never modified by Clothesline's three-day retention. Historical imports may be archived at the next daily sweep based on their original timestamps (Zed uses the thread's update time). There is no background scanning or automatic capture.
 
 ## Agent conversations (Phase Two)
 
@@ -97,4 +106,4 @@ Agents call `poll_messages` and `ack_message` after processing each delivery. Po
 
 ## Release work remaining
 
-The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. SQLite migrations through v3 preserve existing memories while adding conversations, delivery state, and OMP import checkpoints. Still to do: test Intel, evaluate summaries on longer real sessions, and optionally add an adapter for the separate Pi CLI. Clothesline is licensed under the MIT License; see `LICENSE`.
+The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. SQLite migrations through v4 preserve existing memories while adding conversations, delivery state, and verified session-import checkpoints. Still to do: test Intel, evaluate summaries on longer real sessions, and optionally add an adapter for the separate Pi CLI. Clothesline is licensed under the MIT License; see `LICENSE`.

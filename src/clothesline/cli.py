@@ -11,11 +11,15 @@ from clothesline.config import load
 
 def main():
     parser = argparse.ArgumentParser(prog="clothesline")
-    parser.add_argument("command", choices=["serve", "setup", "status", "doctor", "backup", "rebuild-index", "import-omp"])
+    parser.add_argument("command", choices=["serve", "setup", "status", "doctor", "backup", "rebuild-index",
+                                            "import-omp", "import-pi", "import-claude", "import-codex",
+                                            "import-zed", "import-opencode"])
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path, help="Backup destination")
     parser.add_argument("--source", type=Path, help="OMP main-session JSONL file to import")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing to Clothesline")
+    parser.add_argument("--session-id", help="Zed thread or OpenCode session ID")
+    parser.add_argument("--list", action="store_true", help="List available Zed/OpenCode session IDs only")
     args = parser.parse_args()
     config = load(args.config)
     if args.command == "serve":
@@ -34,27 +38,49 @@ def main():
             with Store(config.database).connect() as db:
                 db.execute("UPDATE jobs SET next_at=?,error=NULL WHERE kind IN ('embed','archive')", (time.time(),))
         print("Local models installed; pending jobs are ready to retry")
-    elif args.command == "import-omp":
-        from clothesline.omp_import import parse_session
+    elif args.command.startswith("import-"):
+        from clothesline.database_import import (
+            list_session_ids,
+            parse_opencode,
+            parse_zed,
+        )
+        from clothesline.file_import import parse_claude, parse_codex
+        from clothesline.session_import import parse_session
         from clothesline.storage import Store
 
+        harness = args.command.removeprefix("import-")
         if not args.source:
-            parser.error("import-omp requires --source PATH")
+            parser.error(f"{args.command} requires --source PATH")
         source = args.source.expanduser().resolve(strict=True)
-        parsed = parse_session(source)
+        if args.list:
+            if harness not in {"zed", "opencode"}:
+                parser.error("--list is only available for Zed and OpenCode")
+            print(json.dumps(list_session_ids(source, harness), indent=2))
+            return
+        if harness in {"zed", "opencode"} and not args.session_id:
+            parser.error(f"{args.command} requires --session-id (use --list to find IDs)")
+        parsers = {"omp": lambda: parse_session(source), "pi": lambda: parse_session(source, "Pi"),
+                   "claude": lambda: parse_claude(source), "codex": lambda: parse_codex(source),
+                   "zed": lambda: parse_zed(source, args.session_id),
+                   "opencode": lambda: parse_opencode(source, args.session_id)}
+        parsed = parsers[harness]()
         visible = sum(bool(turn.content) for turn in parsed.turns)
         if args.dry_run:
             print(json.dumps({"source": str(source), "project": parsed.project_key,
-                              "active_branch_messages": len(parsed.turns), "visible_turns": visible,
-                              "reasoning_and_tool_results": "excluded", "database_changed": False}, indent=2))
+                              "session_id": parsed.source_id, "messages": len(parsed.turns),
+                              "visible_turns": visible, "reasoning_and_tool_results": "excluded",
+                              "database_changed": False}, indent=2))
         elif visible:
             store = Store(config.database)
-            harness_id = store.register_harness("clothesline:omp:local-import", "Oh My Pi")
-            agent_id = store.register_agent(harness_id, f"omp-session:{parsed.source_id}")
-            result = store.import_omp(str(source), parsed, harness_id, agent_id)
+            names = {"omp": "Oh My Pi", "pi": "Pi", "claude": "Claude Code",
+                     "codex": "Codex", "zed": "Zed", "opencode": "OpenCode"}
+            harness_id = store.register_harness(f"clothesline:{harness}:local-import", names[harness])
+            agent_id = store.register_agent(harness_id, f"{harness}-session:{parsed.source_id}")
+            source_key = str(source) if harness not in {"zed", "opencode"} else f"{source}#{harness}:{parsed.source_id}"
+            result = store.import_session(source_key, parsed, harness_id, agent_id)
             print(json.dumps({"source": str(source), "agent_id": agent_id, **result}, indent=2))
         else:
-            print("No visible user or assistant text on this session's active branch")
+            print("No visible user or assistant text in this session")
     elif args.command == "rebuild-index":
         from clothesline.storage import Store
 
