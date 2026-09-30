@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite_vec
 
 from clothesline.models import EMBED_MODEL, EMBED_REVISION
+from clothesline.omp_import import ImportedSession
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
@@ -93,6 +94,13 @@ CREATE INDEX IF NOT EXISTS deliveries_inbox ON message_deliveries(recipient_agen
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(body, message_id UNINDEXED, tokenize='porter unicode61');
 """
 
+IMPORT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS import_sources (
+  source_path TEXT PRIMARY KEY, source_session_id TEXT NOT NULL,
+  session_id TEXT REFERENCES sessions(id), last_event_id TEXT, segment INTEGER NOT NULL DEFAULT 0
+);
+"""
+
 
 def uid() -> str:
     return uuid.uuid4().hex
@@ -107,7 +115,7 @@ class Store:
             self.path.chmod(0o600)
         with self.connect() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise ValueError("Unsupported database version; upgrade Clothesline before opening it")
             db.executescript(SCHEMA)
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS vec_history USING vec0(embedding float[384])")
@@ -124,6 +132,9 @@ class Store:
                 # DDL is idempotent so a failed migration can safely be retried.
                 db.executescript(MESSAGE_BUS_SCHEMA)
                 db.execute("PRAGMA user_version=2")
+            if version < 3:
+                db.executescript(IMPORT_SCHEMA)
+                db.execute("PRAGMA user_version=3")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -198,11 +209,19 @@ class Store:
             existing = db.execute("SELECT id FROM turns WHERE session_id=? AND source_id=?", (session_id, source_id)).fetchone()
             if existing:
                 return existing[0]
-            turn_id, now = uid(), time.time()
-            db.execute("INSERT INTO turns VALUES (?,?,?,?,?,?,?,?)", (turn_id, session_id, harness_id, agent_id, source_id, role, content, now))
-            db.execute("UPDATE sessions SET last_turn_at=?, ended_at=NULL WHERE id=?", (now, session_id))
-            self._add_chunks(db, "hot", turn_id, content, now, session[1], harness_id, agent_id)
-            return turn_id
+            return self._write_turn(db, session_id, session["project_id"], harness_id,
+                                    agent_id, source_id, role, content, time.time())
+
+    def _write_turn(self, db, session_id: str, project_id: str | None,
+                    harness_id: str, agent_id: str, source_id: str, role: str,
+                    content: str, created_at: float) -> str:
+        turn_id = uid()
+        db.execute("INSERT INTO turns VALUES (?,?,?,?,?,?,?,?)",
+                   (turn_id, session_id, harness_id, agent_id, source_id, role, content, created_at))
+        db.execute("UPDATE sessions SET last_turn_at=MAX(last_turn_at,?), ended_at=NULL WHERE id=?",
+                   (created_at, session_id))
+        self._add_chunks(db, "hot", turn_id, content, created_at, project_id, harness_id, agent_id)
+        return turn_id
 
     def remember(self, kind: str, content: str, harness_id: str, agent_id: str,
                  project_key: str | None = None, supersedes_id: str | None = None) -> str:
@@ -252,7 +271,7 @@ class Store:
             if not row:
                 return None
             result = dict(row)
-            result["turns"] = [dict(r) for r in db.execute("SELECT * FROM turns WHERE session_id=? ORDER BY created_at,id", (session_id,))]
+            result["turns"] = [dict(r) for r in db.execute("SELECT * FROM turns WHERE session_id=? ORDER BY created_at,rowid", (session_id,))]
             summary = db.execute("SELECT * FROM summaries WHERE session_id=?", (session_id,)).fetchone()
             result["summary"] = dict(summary) if summary else None
             return result
@@ -284,6 +303,54 @@ class Store:
             db.execute("DELETE FROM turns WHERE session_id=?", (session_id,))
             db.execute("UPDATE sessions SET summary_id=?, archived_at=? WHERE id=?", (summary_id, now, session_id))
             return True
+
+    def import_omp(self, source_path: str, parsed: ImportedSession,
+                   harness_id: str, agent_id: str) -> dict:
+        """Import active-branch visible turns atomically, resuming by OMP entry ID."""
+        if not parsed.turns:
+            return {"session_id": None, "imported": 0, "segment": 0}
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._actor(db, harness_id, agent_id)
+            existing = db.execute("SELECT * FROM import_sources WHERE source_path=?", (source_path,)).fetchone()
+            if existing and existing["source_session_id"] != parsed.source_id:
+                raise ValueError("This OMP file now contains a different session")
+            event_ids = [turn.event_id for turn in parsed.turns]
+            if existing and existing["last_event_id"] not in event_ids:
+                raise ValueError("The OMP active branch changed; importing it as the same history would be misleading")
+            first_new = event_ids.index(existing["last_event_id"]) + 1 if existing else 0
+            pending = [turn for turn in parsed.turns[first_new:] if turn.content]
+            segment = existing["segment"] if existing else 0
+            session_id = existing["session_id"] if existing else None
+            current = db.execute("SELECT harness_id,agent_id,archived_at FROM sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
+            if session_id and (not current or current["harness_id"] != harness_id or current["agent_id"] != agent_id):
+                raise ValueError("OMP source belongs to a different harness or agent")
+            if pending:
+                if current and current["archived_at"] is not None:
+                    segment += 1
+                    session_id = None
+                if session_id is None:
+                    session_id = uid()
+                    project_id = self._project(db, parsed.project_key)
+                    started_at = parsed.started_at if not existing else pending[0].created_at
+                    db.execute("INSERT INTO sessions(id,harness_id,agent_id,project_id,started_at,last_turn_at) "
+                               "VALUES (?,?,?,?,?,?)",
+                               (session_id, harness_id, agent_id, project_id, started_at,
+                                max(turn.created_at for turn in pending)))
+                session = db.execute("SELECT project_id,last_turn_at FROM sessions WHERE id=?", (session_id,)).fetchone()
+                expected_project = db.execute("SELECT id FROM projects WHERE project_key=?", (parsed.project_key,)).fetchone()
+                if session["project_id"] != expected_project[0]:
+                    raise ValueError("OMP project changed for an already imported session")
+                for turn in pending:
+                    self._write_turn(db, session_id, session["project_id"], harness_id, agent_id,
+                                     turn.event_id, turn.role, turn.content, turn.created_at)
+            if existing:
+                db.execute("UPDATE import_sources SET session_id=?, last_event_id=?,segment=? WHERE source_path=?",
+                           (session_id, event_ids[-1], segment, source_path))
+            else:
+                db.execute("INSERT INTO import_sources VALUES (?,?,?,?,?)",
+                           (source_path, parsed.source_id, session_id, event_ids[-1], segment))
+            return {"session_id": session_id, "imported": len(pending), "segment": segment}
 
     def rebuild_indexes(self) -> int:
         """Restore derived FTS data and requeue vector embeddings without touching source content."""

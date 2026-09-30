@@ -49,7 +49,7 @@ def create_app(config: Config, store: Store | None = None, models: LocalModels |
     models = models or LocalModels(config.model_dir)
     worker = Worker(store, models)
     bus = MessageBus(store)
-    server = MCPServer("clothesline", version="0.2.0", instructions=(
+    server = MCPServer("clothesline", version="0.3.0", instructions=(
         "Shared, local memory. Register a persistent harness installation key and an agent first. "
         "Submit visible session turns explicitly; connecting alone does not capture transcripts. "
         "Search before assuming a previous decision is current."))
