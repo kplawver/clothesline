@@ -2,7 +2,18 @@
 
 Local, shared memory for coding agents. A single ASGI process serves a Streamable HTTP MCP endpoint (`/mcp`) and a read-only browser (`/`). Submitted session turns are searchable for three days after inactivity; then they are summarized and raw turns are removed. Decisions and preferences remain versioned until explicitly superseded.
 
-**Status: early implementation, not yet a released Homebrew package.** No harness automatically streams its conversation merely by connecting to MCP. Clients must explicitly submit turns, or use a harness adapter. Never submit secrets or private reasoning as text blocks.
+**Status: first macOS release; Apple Silicon tested, Intel not yet tested.** No harness automatically streams its conversation merely by connecting to MCP. Clients must explicitly submit turns, or use a harness adapter. Never submit secrets or private reasoning as text blocks.
+
+## Install with Homebrew
+
+```sh
+brew tap kplawver/tap
+brew install clothesline
+clothesline setup  # downloads ~67 MB embeddings and ~1.83 GB GGUF, once
+brew services start clothesline
+```
+
+Open http://127.0.0.1:19004/ for the browser and connect agents to http://127.0.0.1:19004/mcp. The formula uses the locked `uv` dependencies at install time, which requires access to the Python package index; models download separately on `setup`. The user-level brew service uses the default data directory, preserving memory across upgrades. Use `brew services restart clothesline` after changing configuration.
 
 ## Development
 
@@ -65,4 +76,4 @@ FTS5 handles literal keyword queries; sqlite-vec adds local semantic search when
 
 ## Release work remaining
 
-Before shipping: verify `llama.cpp` support on both Apple Silicon and Intel, add schema migration support beyond the initial version, tag and publish source artifacts, then add a verified source URL/SHA-256 Homebrew formula and user service to `~/workspace/homebrew-tap`. Pi still needs an adapter before it can connect. No Homebrew formula should claim a non-existent source tarball.
+The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. Still to do: test Intel, add future database migrations beyond initial schema version 1, evaluate summaries on longer real sessions, and add a Pi adapter. The repository does not yet declare a software license; its owner must choose one.
