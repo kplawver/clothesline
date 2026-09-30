@@ -76,4 +76,4 @@ FTS5 handles literal keyword queries; sqlite-vec adds local semantic search when
 
 ## Release work remaining
 
-The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. Still to do: test Intel, add future database migrations beyond initial schema version 1, evaluate summaries on longer real sessions, and add a Pi adapter. The repository does not yet declare a software license; its owner must choose one.
+The macOS Apple Silicon Homebrew install, service start, and cross-client semantic recall have been tested. Still to do: test Intel, add future database migrations beyond initial schema version 1, evaluate summaries on longer real sessions, and add a Pi adapter. Clothesline is licensed under the MIT License; see `LICENSE`.
