@@ -76,7 +76,7 @@ Both packaging paths read the same skill text. Pick whichever fits your harness.
 
 ### Generic `.agents` standard (Tallmadge, most harnesses)
 
-[Clothesline](https://github.com/kplawver/tallmadge) (`clpr`) resolves plugins from the same `.claude-plugin/marketplace.json` this repo publishes, so one catalog serves both systems:
+[Tallmadge](https://github.com/kplawver/tallmadge) (`clpr`) resolves plugins from the same `.claude-plugin/marketplace.json` this repo publishes, so one catalog serves both systems:
 
 ```sh
 clpr marketplace add kplawver/clothesline
@@ -87,6 +87,8 @@ That symlinks the `clothesline-agents` skill and the MCP server into `~/.agents/
 
 The repository itself is in the canonical layout — `AGENTS.md` at the root, skills bridged through `.agents/skills/`, and `CLAUDE.md` plus `.claude/skills` as committable relative symlinks — so a teammate who clones it picks up the standards without installing anything. `clpr repo check` audits this and runs in CI.
 
+The same process works for pretty much any harness to install, and the marketplace and skill should work for any harness that supports them. 
+
 ### Claude Code plugin
 
 Install Clothesline with Homebrew and start its service first, then:
@@ -96,7 +98,7 @@ claude plugin marketplace add kplawver/clothesline
 claude plugin install clothesline@clothesline --scope local  # or --scope user
 ```
 
-This bundles the MCP connection and the `/clothesline:agents` skill. It has **no hooks** — turn capture is Setauket's job, and lives in [the Setauket plugin](https://github.com/kplawver/setauket). For development, load it with `claude --plugin-dir /path/to/clothesline/plugins/claude-code`. The bundled MCP URL assumes the default loopback port 19004.
+This bundles the MCP connection and the `/clothesline:agents` skill.  For development, load it with `claude --plugin-dir /path/to/clothesline/plugins/claude-code`. The bundled MCP URL assumes the default loopback port 19004.
 
 > The skill file lives in the plugin and `.agents/skills/` links into it, rather than the reverse, because `claude plugin validate --strict` refuses to follow a symlinked plugin component. Tallmadge and Claude Code therefore agree on one copy instead of two that can drift.
 
