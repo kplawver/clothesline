@@ -48,5 +48,10 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude plugin validate . --strict
           claude plugin validate plugins/claude-code --strict
+      - name: Audit the generic .agents layout with Tallmadge
+        run: |
+          git clone --depth 1 https://github.com/kplawver/tallmadge.git /tmp/tallmadge
+          cd /tmp/tallmadge && bundle install --quiet
+          bin/clpr repo check "$GITHUB_WORKSPACE"
       # The OMP extension and skill moved to kplawver/setauket with the capture
       # integrations; their syntax check lives in that repository's CI.

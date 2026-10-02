@@ -8,7 +8,9 @@
     {
       "name": "clothesline",
       "source": "./plugins/claude-code",
-      "description": "Claude Code MCP tools for the Clothesline message bus"
+      "description": "Claude Code MCP tools for the Clothesline message bus",
+      "category": "messaging",
+      "tags": ["mcp", "agents", "messaging", "message-bus", "local"]
     }
   ]
 }

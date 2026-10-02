@@ -156,11 +156,30 @@ def test_plugin_and_marketplace_manifests():
     marketplace = json.loads((root / ".claude-plugin/marketplace.json").read_text())
     mcp = json.loads((plugin / ".mcp.json").read_text())
     assert manifest["name"] == marketplace["plugins"][0]["name"] == "clothesline"
+    assert marketplace["owner"]["name"] and isinstance(marketplace["plugins"], list)
+    assert marketplace["plugins"][0]["source"] == "./plugins/claude-code"
     assert set(mcp["mcpServers"]) == {"clothesline"}
     assert mcp["mcpServers"]["clothesline"]["url"] == "http://127.0.0.1:19004/mcp"
-    assert (plugin / "skills/agents/SKILL.md").exists()
     # Capture hooks and importers belong to Setauket; this repo must not ship them.
     assert not (plugin / "hooks").exists()
     assert not (root / "integrations").exists()
     for name in ("sessions", "memories", "models", "worker", "capture"):
         assert not (Path(root / "src/clothesline") / f"{name}.py").exists()
+
+
+def test_agents_standard_layout_serves_one_copy_of_the_skill():
+    """`.agents` and the plugin must not drift: both resolve to the same file."""
+    root = Path(__file__).resolve().parents[1]
+    skill = root / "plugins/claude-code/skills/clothesline-agents/SKILL.md"
+    assert skill.is_file() and not skill.is_symlink()  # the plugin holds the real file
+    linked = root / ".agents/skills/clothesline-agents"
+    assert linked.is_symlink(), ".agents/skills must bridge to the plugin, not hold a copy"
+    assert linked.resolve() == skill.parent.resolve()
+    assert linked.joinpath("SKILL.md").read_bytes() == skill.read_bytes()
+    frontmatter = skill.read_text().split("---")[1]
+    assert "name: clothesline-agents" in frontmatter
+    assert "description:" in frontmatter, "most harnesses require description frontmatter"
+    # The composed instruction fragment Tallmadge merges into ~/.agents/agents.md.
+    fragment = root / "plugins/claude-code/agents.md"
+    assert fragment.is_file() and fragment.read_text().strip()
+    assert (root / "AGENTS.md").is_file(), "canonical repo instructions are required"

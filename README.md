@@ -64,7 +64,24 @@ Claude Code, Zed, and Oh My Pi (OMP) have all been verified against this server.
 
 The official Python MCP SDK serves both `2025-11-25` and `2026-07-28`; older clients negotiate with the legacy initialization handshake. Transport sessions and harness names are not authenticated identities.
 
-## Claude Code plugin
+## Installing the skills and MCP server
+
+Both packaging paths read the same skill text. Pick whichever fits your harness.
+
+### Generic `.agents` standard (Tallmadge, most harnesses)
+
+[Clothesline](https://github.com/kplawver/tallmadge) (`clpr`) resolves plugins from the same `.claude-plugin/marketplace.json` this repo publishes, so one catalog serves both systems:
+
+```sh
+clpr marketplace add kplawver/clothesline
+clpr activate clothesline@clothesline
+```
+
+That symlinks the `clothesline-agents` skill and the MCP server into `~/.agents/`, and composes the plugin's `agents.md` fragment into `~/.agents/agents.md` so every harness bridged by `clpr` sees the bus guidance.
+
+The repository itself is in the canonical layout — `AGENTS.md` at the root, skills bridged through `.agents/skills/`, and `CLAUDE.md` plus `.claude/skills` as committable relative symlinks — so a teammate who clones it picks up the standards without installing anything. `clpr repo check` audits this and runs in CI.
+
+### Claude Code plugin
 
 Install Clothesline with Homebrew and start its service first, then:
 
@@ -74,6 +91,8 @@ claude plugin install clothesline@clothesline --scope local  # or --scope user
 ```
 
 This bundles the MCP connection and the `/clothesline:agents` skill. It has **no hooks** — turn capture is Setauket's job, and lives in [the Setauket plugin](https://github.com/kplawver/setauket). For development, load it with `claude --plugin-dir /path/to/clothesline/plugins/claude-code`. The bundled MCP URL assumes the default loopback port 19004.
+
+> The skill file lives in the plugin and `.agents/skills/` links into it, rather than the reverse, because `claude plugin validate --strict` refuses to follow a symlinked plugin component. Tallmadge and Claude Code therefore agree on one copy instead of two that can drift.
 
 ## Release notes for 0.7.0
 
