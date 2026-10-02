@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
@@ -24,38 +25,41 @@ def actors(tmp_path):
     return store, bus, (first, sender), (second, receiver), (second, third)
 
 
-def test_v1_upgrade_preserves_sessions_and_is_repeatable(tmp_path):
+def test_schema_is_version_one_and_reopens_without_migration(tmp_path):
     path = tmp_path / "existing.sqlite3"
     store = Store(path)
-    harness = store.register_harness("stable", "Zed")
-    agent = store.register_agent(harness, "main")
-    session = store.start_session(harness, agent)
-    store.add_turn(session, harness, agent, "one", "user", "Original history")
-    # Simulate a database created by v1, which has no message-bus tables.
     with store.connect() as db:
-        db.execute("DROP TABLE messages_fts")
-        db.execute("DROP TABLE message_deliveries")
-        db.execute("DROP TABLE messages")
-        db.execute("DROP TABLE conversations")
-        db.execute("DROP TABLE agent_presence")
-        db.execute("PRAGMA user_version=1")
-    upgraded = Store(path)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
     assert path.stat().st_mode & 0o777 == 0o600
     assert path.parent.stat().st_mode & 0o777 == 0o700
-    assert upgraded.get_session(session)["turns"][0]["content"] == "Original history"
-    assert Store(path).get_session(session)["id"] == session
-    with upgraded.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
-    MessageBus(upgraded).online(harness, agent)
+    reopened = Store(path)
+    harness = reopened.register_harness("stable", "Zed")
+    agent = reopened.register_agent(harness, "main")
+    assert reopened.register_agent(harness, "main") == agent
+    MessageBus(reopened).online(harness, agent)
+    with store.connect() as db:
+        db.execute("PRAGMA user_version=99")
+    with pytest.raises(ValueError, match="Unsupported database version"):
+        Store(path)
+
+
+def test_session_reference_is_opaque_and_unvalidated(actors):
+    """Setauket owns sessions, so Clothesline stores a reference without checking it."""
+    store, bus, (h1, sender), _, _ = actors
+    # A session that cannot exist in this database is still accepted and echoed back.
+    conversation = bus.open_conversation(h1, sender, "Cross-service", session_id="not-a-real-session")
+    assert bus.conversation(conversation)["session_id"] == "not-a-real-session"
+    with pytest.raises(ValueError, match="opaque"):
+        bus.open_conversation(h1, sender, "Too long", session_id="x" * 200)
+    with store.connect() as db:
+        # No sessions table remains, so the column carries no foreign key.
+        assert not db.execute("SELECT name FROM sqlite_master WHERE name='sessions'").fetchone()
 
 
 def test_targeted_delivery_survives_offline_and_ack_is_idempotent(actors):
-    store, bus, (h1, sender), (h2, receiver), _ = actors
-    session = store.start_session(h1, sender, "project")
-    conversation = bus.open_conversation(h1, sender, "Feature review", session_id=session)
+    _, bus, (h1, sender), (h2, receiver), _ = actors
+    conversation = bus.open_conversation(h1, sender, "Feature review", project_key="project")
     assert bus.conversation(conversation)["project_key"] == "project"
-    with pytest.raises(ValueError):
-        bus.open_conversation(h1, sender, "wrong scope", project_key="elsewhere", session_id=session)
     bus.offline(h2, receiver)
     message = bus.send(conversation, h1, sender, "event-1", "Please review the implementation", receiver)
     assert bus.send(conversation, h1, sender, "event-1", "Please review the implementation", receiver) == message
@@ -117,7 +121,7 @@ def test_search_reindex_and_validation(actors):
 
 def test_mcp_tools_and_browser(actors, tmp_path):
     store, _, (h1, sender), (h2, receiver), _ = actors
-    app = create_app(Config(data_dir=tmp_path), store, start_worker=False)
+    app = create_app(Config(data_dir=tmp_path), store)
     with TestClient(app, base_url="http://127.0.0.1:19004") as client:
         headers = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2026-07-28"}
 
@@ -143,3 +147,20 @@ def test_mcp_tools_and_browser(actors, tmp_path):
         assert "A harmless inbox test" in client.get("/conversations?q=harmless").text
         tool("ack_message", {"harness_id": h2, "agent_id": receiver, "message_id": sent})
         assert tool("poll_messages", {"harness_id": h2, "agent_id": receiver})["messages"] == []
+
+
+def test_plugin_and_marketplace_manifests():
+    root = Path(__file__).resolve().parents[1]
+    plugin = root / "plugins/claude-code"
+    manifest = json.loads((plugin / ".claude-plugin/plugin.json").read_text())
+    marketplace = json.loads((root / ".claude-plugin/marketplace.json").read_text())
+    mcp = json.loads((plugin / ".mcp.json").read_text())
+    assert manifest["name"] == marketplace["plugins"][0]["name"] == "clothesline"
+    assert set(mcp["mcpServers"]) == {"clothesline"}
+    assert mcp["mcpServers"]["clothesline"]["url"] == "http://127.0.0.1:19004/mcp"
+    assert (plugin / "skills/agents/SKILL.md").exists()
+    # Capture hooks and importers belong to Setauket; this repo must not ship them.
+    assert not (plugin / "hooks").exists()
+    assert not (root / "integrations").exists()
+    for name in ("sessions", "memories", "models", "worker", "capture"):
+        assert not (Path(root / "src/clothesline") / f"{name}.py").exists()

@@ -3,7 +3,9 @@
 import re
 import time
 
-from clothesline.storage import Store, uid
+from clothesline import identity
+from clothesline.identity import uid
+from clothesline.storage import MAX_SESSION_REFERENCE, Store
 
 STALE_AFTER = 60 * 60
 HEARTBEAT_AFTER = 15 * 60
@@ -15,14 +17,14 @@ class MessageBus:
 
     def online(self, harness_id: str, agent_id: str) -> None:
         with self.store.connect() as db:
-            self.store._actor(db, harness_id, agent_id)
+            identity.actor(db, harness_id, agent_id)
             now = time.time()
             db.execute("INSERT INTO agent_presence VALUES (?,?,?,NULL) "
                        "ON CONFLICT(agent_id) DO UPDATE SET online_at=excluded.online_at, "
                        "last_seen_at=excluded.last_seen_at, offline_at=NULL", (agent_id, now, now))
 
     def _touch(self, db, harness_id: str, agent_id: str) -> None:
-        self.store._actor(db, harness_id, agent_id)
+        identity.actor(db, harness_id, agent_id)
         now = time.time()
         updated = db.execute("UPDATE agent_presence SET last_seen_at=? WHERE agent_id=? "
                              "AND offline_at IS NULL AND last_seen_at>?",
@@ -36,7 +38,7 @@ class MessageBus:
 
     def offline(self, harness_id: str, agent_id: str) -> bool:
         with self.store.connect() as db:
-            self.store._actor(db, harness_id, agent_id)
+            identity.actor(db, harness_id, agent_id)
             updated = db.execute("UPDATE agent_presence SET offline_at=? WHERE agent_id=? AND offline_at IS NULL",
                                  (time.time(), agent_id))
             return updated.rowcount == 1
@@ -57,18 +59,14 @@ class MessageBus:
                           project_key: str | None = None, session_id: str | None = None) -> str:
         if not title.strip() or len(title) > 200:
             raise ValueError("Conversation title must contain 1–200 characters")
+        if session_id and (len(session_id) > MAX_SESSION_REFERENCE or not session_id.strip()):
+            raise ValueError("Session reference must be a short opaque identifier")
         with self.store.connect() as db:
             self._touch(db, harness_id, agent_id)
-            session = db.execute("SELECT project_id FROM sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
-            if session_id and not session:
-                raise ValueError("Unknown session")
-            project_id = self.store._project(db, project_key)
-            if session and project_key and project_id != session["project_id"]:
-                raise ValueError("Conversation project must match the associated session")
-            project_id = session["project_id"] if session else project_id
+            # Sessions live in Setauket, so a session reference is stored but never validated here.
             conversation_id = uid()
             db.execute("INSERT INTO conversations VALUES (?,?,?,?,?)",
-                       (conversation_id, title.strip(), project_id, session_id, time.time()))
+                       (conversation_id, title.strip(), identity.project(db, project_key), session_id, time.time()))
             return conversation_id
 
     def send(self, conversation_id: str, harness_id: str, agent_id: str, client_message_id: str,
