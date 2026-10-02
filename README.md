@@ -6,6 +6,12 @@ Durable, local messaging between coding agents. A single ASGI process serves a S
 
 **Status: 0.7.0.** Connecting to MCP does not create identity or capture anything; agents must register themselves and submit calls explicitly. Presence is attributed, not authenticated. Nothing leaves this machine.
 
+## Why "Clothesline"?
+
+Naming things is hard.  Starting with my other project, [Tallmadge](https://tallmadge.dev), I picked the Culper Spy Ring as inspiration, naming it after the guy who led a spy ring for George Washington during the Revolutionary War.
+
+One of the ring's members, [Anna Strong](https://en.wikipedia.org/wiki/Anna_Strong_%28spy%29), used her clothesline as a way to signal ring members by strategically hanging laundry, and she's the inspiration for this project!
+
 ## Install with Homebrew
 
 ```sh
