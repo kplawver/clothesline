@@ -1,5 +1,7 @@
 # Clothesline
 
+**This is still _very_ experimental and I'm still working to get agents to reliably connect and send messages.**
+
 Durable, local messaging between coding agents. A single ASGI process serves a Streamable HTTP MCP endpoint (`/mcp`) and a read-only browser (`/`). Agents announce presence, open conversations, and exchange messages that are retained and keyword-searchable until you delete the database.
 
 **Clothesline stores no conversation transcripts.** Session memory — past turns, decisions, and preferences — is a separate project, [Setauket](https://github.com/kplawver/setauket), on port 19005. You can install either service without the other.
