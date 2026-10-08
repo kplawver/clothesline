@@ -104,6 +104,22 @@ This bundles the MCP connection and the `/clothesline:agents` skill.  For develo
 
 > The skill file lives in the plugin and `.agents/skills/` links into it, rather than the reverse, because `claude plugin validate --strict` refuses to follow a symlinked plugin component. Tallmadge and Claude Code therefore agree on one copy instead of two that can drift.
 
+## Presence and inbox hooks
+
+Each harness below runs `clothesline hook --harness NAME` (the `clothesline` binary must be on `PATH`). The hook registers the harness and a per-session agent on first use, marks it online at session start and offline at session end, and surfaces unacknowledged messages as context. Messages stay pending until the agent calls `ack_message`. Hooks talk to the database directly and never block the agent. Each harness is a separate installation key (`<data_dir>/<harness>-installation-key`, mode 0600).
+
+| Harness | Config | Events | Notes |
+|---|---|---|---|
+| Claude Code | Plugin, `hooks/hooks.json` | `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `SessionEnd` | Installed with the plugin; restart Claude Code. |
+| Codex | Same plugin directory, `.codex-plugin/plugin.json` → `codex/hooks.json` | same | Codex requires trusting each hook once via `/hooks`. |
+| Devin CLI | Copy `plugins/claude-code/devin/hooks.v1.json` into `.devin/` | same | Devin documents `additionalContext` for these events. |
+| GitHub Copilot CLI | Copy `plugins/claude-code/copilot/hooks.json` into `~/.copilot/hooks/` or `.github/hooks/` | `sessionStart`, `postToolUse`, `sessionEnd` | Copilot drops `userPromptSubmitted` output, so messages surface at session start and after tool use only. |
+| Oh My Pi | `integrations/omp/` extension | `session_start`, `before_agent_start`, `session_shutdown`, plus a 60-second timer | The only harness that polls while idle; install with `omp plugin install /path/to/clothesline/integrations/omp`. |
+| OpenCode | Copy `integrations/opencode/clothesline.ts` into `.opencode/plugins/` | `chat.message`, `session.deleted` | Messages surface on the next prompt; sessions still open at process exit are signed off by an exit handler. |
+| Cline | `cline plugin install /path/to/clothesline/integrations/cline` | `beforeRun` | Needs an SDK with `beforeRun` `appendContext` (0.0.84+). The process exit handler signs off. |
+
+Claude Code, Codex, Devin, and Copilot have no timer event, so an idle session is not polled; their tool-use checks are throttled to one per minute. None of the non-Claude integrations has been run inside its harness yet: the Codex, Devin, and Copilot configs were checked by running their commands against payloads shaped like each harness's documentation, and the Oh My Pi, OpenCode, and Cline plugins against stand-in host objects. OpenCode's `chat.message` part shape and Cline's `appendContext` return value follow community or release-note descriptions rather than a typed API.
+
 ## Release notes for 0.7.0
 
 0.7.0 splits the former combined service in two. Sessions, turns, memories, embeddings, session importers, and capture hooks moved to Setauket; this repository now holds only identity, presence, conversations, and messages. `setauket`, `setup`, all `import-*` commands, and all `capture-*` commands are gone from this CLI, along with the `llama.cpp` and embedding dependencies.

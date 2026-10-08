@@ -160,9 +160,10 @@ def test_plugin_and_marketplace_manifests():
     assert marketplace["plugins"][0]["source"] == "./plugins/claude-code"
     assert set(mcp["mcpServers"]) == {"clothesline"}
     assert mcp["mcpServers"]["clothesline"]["url"] == "http://127.0.0.1:19004/mcp"
-    # Capture hooks and importers belong to Setauket; this repo must not ship them.
-    assert not (plugin / "hooks").exists()
-    assert not (root / "integrations").exists()
+    # Capture hooks and importers belong to Setauket; Clothesline hooks may only drive presence and polling.
+    hooks = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]
+    commands = {(h["command"], tuple(h["args"])) for group in hooks.values() for entry in group for h in entry["hooks"]}
+    assert commands == {("clothesline", ("hook",))}
     for name in ("sessions", "memories", "models", "worker", "capture"):
         assert not (Path(root / "src/clothesline") / f"{name}.py").exists()
 

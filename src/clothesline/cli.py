@@ -3,16 +3,20 @@
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 from clothesline.config import load
+from clothesline.hooks import HARNESSES
 
 
 def main():
     parser = argparse.ArgumentParser(prog="clothesline")
-    parser.add_argument("command", choices=["serve", "status", "doctor", "backup", "rebuild-index"])
+    parser.add_argument("command", choices=["serve", "status", "doctor", "backup", "rebuild-index", "hook"])
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path, help="Backup destination")
+    parser.add_argument("--harness", choices=sorted(HARNESSES), default="claude", help="Harness calling `hook`")
+    parser.add_argument("--event", help="Hook event, for harnesses whose payload does not name it")
     args = parser.parse_args()
     config = load(args.config)
     if args.command == "serve":
@@ -21,6 +25,15 @@ def main():
         from clothesline.app import create_app
 
         uvicorn.run(create_app(config), host=config.host, port=config.port, workers=1)
+    elif args.command == "hook":
+        from clothesline.hooks import handle
+
+        try:
+            output = handle(config, json.load(sys.stdin), args.harness, args.event)
+            if output:
+                print(json.dumps(output))
+        except Exception as error:  # noqa: BLE001 - A presence hook must never interrupt an agent's turn.
+            print(f"Clothesline hook skipped ({type(error).__name__})", file=sys.stderr)
     elif args.command == "rebuild-index":
         from clothesline.storage import Store
 

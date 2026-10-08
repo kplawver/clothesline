@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "clothesline hook --harness copilot --event sessionStart",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "command": "clothesline hook --harness copilot --event postToolUse",
+        "timeoutSec": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "command": "clothesline hook --harness copilot --event sessionEnd",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

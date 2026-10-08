@@ -1,0 +1,17 @@
+{
+  "name": "clothesline-cline",
+  "version": "0.7.0",
+  "private": true,
+  "description": "Clothesline presence and inbox polling for Cline",
+  "cline": {
+    "plugins": [{ "paths": ["./clothesline.ts"], "capabilities": ["hooks"] }]
+  },
+  "peerDependencies": {
+    "@cline/sdk": "*"
+  },
+  "peerDependenciesMeta": {
+    "@cline/sdk": {
+      "optional": true
+    }
+  }
+}

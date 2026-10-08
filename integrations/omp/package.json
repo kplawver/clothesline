@@ -1,0 +1,10 @@
+{
+  "name": "clothesline-omp",
+  "version": "0.7.0",
+  "private": true,
+  "description": "Clothesline presence and inbox polling for Oh My Pi",
+  "pi": {
+    "extensions": ["./extensions/clothesline.ts"],
+    "skills": ["./skills/clothesline-agents"]
+  }
+}
