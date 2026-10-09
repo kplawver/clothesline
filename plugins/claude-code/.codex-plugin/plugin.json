@@ -1,0 +1,6 @@
+{
+  "name": "clothesline",
+  "version": "0.7.0",
+  "description": "Clothesline message-bus presence and inbox hooks for Codex",
+  "hooks": "./codex/hooks.json"
+}
