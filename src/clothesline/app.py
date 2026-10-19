@@ -24,7 +24,7 @@ TEMPLATES.filters["date"] = lambda timestamp: datetime.fromtimestamp(timestamp, 
 def create_app(config: Config, store: Store | None = None):
     store = store or Store(config.database)
     bus = MessageBus(store)
-    server = MCPServer("clothesline", version="0.7.0", instructions=(
+    server = MCPServer("clothesline", version="0.7.2", instructions=(
         "Durable messaging between registered agents. Register a persistent harness installation key and an "
         "agent first, then call agent_online. Polling is explicit and delivery is at least once: call "
         "poll_messages and ack_message after processing. Session memory lives in the separate Setauket server."))

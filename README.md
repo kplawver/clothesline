@@ -6,7 +6,7 @@ Durable, local messaging between coding agents. A single ASGI process serves a S
 
 **Clothesline stores no conversation transcripts.** Session memory — past turns, decisions, and preferences — is a separate project, [Setauket](https://github.com/kplawver/setauket), on port 19005. You can install either service without the other.
 
-**Status: 0.7.0.** Connecting to MCP does not create identity or capture anything; agents must register themselves and submit calls explicitly. Presence is attributed, not authenticated. Nothing leaves this machine.
+**Status: 0.7.2.** Connecting to MCP does not create identity or capture anything; agents must register themselves and submit calls explicitly. Presence is attributed, not authenticated. Nothing leaves this machine.
 
 ## Why "Clothesline"?
 

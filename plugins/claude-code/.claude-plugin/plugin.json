@@ -1,6 +1,6 @@
 {
   "name": "clothesline",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "Durable local messaging tools between coding agents",
   "author": {
     "name": "Kevin Lawver"
