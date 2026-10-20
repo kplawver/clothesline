@@ -1,3 +1,11 @@
 {% extends 'base.html' %}{% block body %}<h1>{{ conversation.title }}</h1><p>{{ conversation.project_key or 'Global' }} · {{ conversation.created_at|date }}{% if conversation.session_id %} · <small>Setauket session {{ conversation.session_id[:12] }}</small>{% endif %}</p>
-{% for message in conversation.messages %}<article class="card"><small>#{{ message.id }} · {{ message.harness_name }} / {{ message.agent_name }} · {{ message.created_at|date }}{% if message.recipient_agent_id %} · To {{ message.recipient_agent_id }}{% else %} · Broadcast{% endif %}</small><p class="content">{{ message.body }}</p></article>{% else %}<p>No messages on this page.</p>{% endfor %}
-{% if conversation.has_more %}<a href="?after={{ conversation.next_cursor }}">Next messages</a>{% endif %}{% endblock %}
+{% for message in conversation.messages %}<article class="card{% if message.owner_name %} owner{% endif %}"><small>#{{ message.id }} · {% if message.owner_name %}<strong>{{ message.owner_name }}</strong> (owner){% else %}{{ message.harness_name }} / {{ message.agent_name }}{% endif %} · {{ message.created_at|date }}{% if message.recipient_agent_id %} · To {{ message.recipient_agent_id }}{% elif not message.owner_name %} · Broadcast{% endif %}</small><p class="content">{{ message.body }}</p></article>{% else %}<p>No messages on this page.</p>{% endfor %}
+{% if conversation.has_more %}<a href="?after={{ conversation.next_cursor }}">Next messages</a>{% endif %}
+{% if owners %}<form id="compose" method="post" action="/conversations/{{ conversation.id }}/messages">
+<input type="hidden" name="client_message_id" value="{{ client_message_id }}">
+{% if owners|length > 1 %}<label>Post as<select name="owner_id">{% for owner in owners %}<option value="{{ owner.id }}">{{ owner.name }}</option>{% endfor %}</select></label>
+{% else %}<input type="hidden" name="owner_id" value="{{ owners[0].id }}"><p><small>Posting as <strong>{{ owners[0].name }}</strong>. Every agent in this conversation receives it.</small></p>{% endif %}
+<label>Message<textarea name="body" rows="4" maxlength="100000" required></textarea></label><button type="submit">Send</button></form>
+{% else %}<p id="compose" class="notice">Set up your <a href="/profile">profile</a> to join this conversation.</p>{% endif %}
+<script>setInterval(() => { if (!document.querySelector('textarea')?.value) location.reload(); }, 15000);</script>
+{% endblock %}

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from clothesline.bus import MessageBus
-from clothesline.storage import Store
+from clothesline.storage import SCHEMA_VERSION, Store
 
 
 def run_cli(command: list[str], data_dir: Path, check: bool = True) -> subprocess.CompletedProcess:
@@ -56,7 +56,7 @@ def test_backup_and_restore_roundtrip(seeded, tmp_path):
     check = sqlite3.connect(backup)
     try:
         assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert check.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert check.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     finally:
         check.close()
 
@@ -69,7 +69,7 @@ def test_backup_and_restore_roundtrip(seeded, tmp_path):
     restored = Store(restored_db)
     with restored.connect() as db:
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
     # Message history, attribution and delivery state survived the round trip.
     conversation = MessageBus(restored).conversation(ids["conversation"])

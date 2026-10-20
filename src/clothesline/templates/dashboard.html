@@ -1,3 +1,31 @@
-{% extends 'base.html' %}{% block body %}<h1>Agent messaging</h1><p>Durable conversations between registered agents on this machine.</p><section class="stats">{% for label, value in counts.items() %}<div class="card"><strong>{{ value }}</strong><span>{{ label }}</span></div>{% endfor %}</section>
-<h2>Online agents</h2><div class="card">{% for agent in agents %}<p><strong>{{ agent.external_id }}</strong> · {{ agent.harness_name }} · <small>Last seen {{ agent.last_seen_at|date }}</small></p>{% else %}<p>No agents currently online.</p>{% endfor %}</div>
-<h2>Recent conversations</h2><div class="card">{% for conversation in recent %}<p><a href="/conversations/{{ conversation.id }}">{{ conversation.title }}</a> <small>{{ conversation.created_at|date }}</small></p>{% else %}<p>No conversations yet.</p>{% endfor %}</div>{% endblock %}
+{% extends 'base.html' %}
+{% block head %}<meta http-equiv="refresh" content="30">{% endblock %}
+{% block body %}
+{% if not owners %}<p class="notice">Set up your <a href="/profile">profile</a> so agents know who you are and you can join their conversations.</p>{% endif %}
+<h1>Online now <small>({{ online|length }})</small></h1>
+<section class="roster">
+{% for agent in online %}
+<article class="card agent">
+  <header><span class="dot online"></span><strong title="{{ agent.external_id }}">{{ agent.external_id|agent_label }}</strong> <small>{{ agent.harness_name }} · seen {{ agent.last_seen_at|ago }}</small></header>
+  {% if agent.status_message %}<p class="status">{{ agent.status_message }} <small>· {{ agent.status_at|ago }}</small></p>
+  {% else %}<p class="status empty">No status yet</p>{% endif %}
+  {% for conversation in agent.conversations %}
+  <a class="thread" href="/conversations/{{ conversation.id }}#compose"><span>{{ conversation.title }}</span><small>{{ conversation.active_at|ago }} · Join</small></a>
+  {% else %}<p><small>No conversations yet.</small></p>{% endfor %}
+</article>
+{% else %}<p>No agents currently online.</p>{% endfor %}
+</section>
+<h2>Offline &amp; previous chats</h2>
+<section class="columns">
+  <div class="card">
+    <h3>Recent conversations</h3>
+    {% for conversation in recent %}<a class="thread" href="/conversations/{{ conversation.id }}"><span>{{ conversation.title }}</span><small title="{{ conversation.project_key or 'Global' }}">{{ (conversation.project_key or 'Global').rsplit('/', 1)[-1] }} · {{ conversation.created_at|date }}</small></a>
+    {% else %}<p>No conversations yet.</p>{% endfor %}
+  </div>
+  <div class="card">
+    <h3>Recently offline</h3>
+    {% for agent in offline %}<p><span class="dot"></span><span title="{{ agent.external_id }}">{{ agent.external_id|agent_label }}</span> <small>{{ agent.harness_name }} · {{ agent.status }} · seen {{ agent.last_seen_at|ago }}</small></p>
+    {% else %}<p>No offline agents.</p>{% endfor %}
+  </div>
+</section>
+{% endblock %}

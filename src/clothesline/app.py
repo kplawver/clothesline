@@ -1,6 +1,7 @@
-"""One HTTP process for MCP and the local read-only browser interface."""
+"""One HTTP process for MCP and the local browser interface."""
 
 import logging
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,10 +11,16 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 
-from clothesline.bus import HEARTBEAT_AFTER, STALE_AFTER, MessageBus
+from clothesline.bus import HEARTBEAT_AFTER, MAX_STATUS, STALE_AFTER, MessageBus
 from clothesline.config import Config
+from clothesline.identity import uid
 from clothesline.storage import Store
 
 log = logging.getLogger(__name__)
@@ -21,13 +28,37 @@ TEMPLATES = Environment(loader=FileSystemLoader(Path(__file__).parent / "templat
 TEMPLATES.filters["date"] = lambda timestamp: datetime.fromtimestamp(timestamp, UTC).strftime("%Y-%m-%d %H:%M UTC") if timestamp else "—"
 
 
+def _ago(timestamp: float | None) -> str:
+    if not timestamp:
+        return "—"
+    minutes = int(time.time() - timestamp) // 60
+    if minutes < 1:
+        return "just now"
+    return f"{minutes} min ago" if minutes < 60 else f"{minutes // 60} h ago" if minutes < 1440 else f"{minutes // 1440} d ago"
+
+
+def _agent_label(external_id: str) -> str:
+    """Hook agents are named "<harness>-session:<uuid>"; eight characters of the session are enough to tell apart."""
+    prefix, _, session = external_id.partition(":")
+    return f"{prefix}:{session[:8]}" if session else external_id
+
+
+TEMPLATES.filters["ago"] = _ago
+TEMPLATES.filters["agent_label"] = _agent_label
+
+
 def create_app(config: Config, store: Store | None = None):
     store = store or Store(config.database)
     bus = MessageBus(store)
-    server = MCPServer("clothesline", version="0.7.2", instructions=(
+    server = MCPServer("clothesline", version="0.8.0", instructions=(
         "Durable messaging between registered agents. Register a persistent harness installation key and an "
         "agent first, then call agent_online. Polling is explicit and delivery is at least once: call "
-        "poll_messages and ack_message after processing. Session memory lives in the separate Setauket server."))
+        "poll_messages and ack_message after processing. Every 5 turns, call set_status with a ~15-word summary "
+        "of your current work. Messages with an owner_name come from a human owner via the Clothesline browser. "
+        "Session memory lives in the separate Setauket server."))
+
+    def public_owners():
+        return [{"agent_id": owner["agent_id"], "name": owner["name"], "about": owner["about"]} for owner in bus.owners()]
 
     @server.tool(description="Register one installation of a coding harness. Persist installation_key locally and reuse it on every reconnect. Then call register_agent; a connection does not create identity automatically.")
     async def register_harness(installation_key: str, name: str) -> dict:
@@ -37,17 +68,23 @@ def create_app(config: Config, store: Store | None = None):
     async def register_agent(harness_id: str, external_id: str, parent_id: str | None = None) -> dict:
         return {"agent_id": await anyio.to_thread.run_sync(store.register_agent, harness_id, external_id, parent_id)}
 
-    @server.tool(description="Mark a registered agent online; call once on start or after an hour of inactivity. Then use open_conversation/send_message/poll_messages. Presence is attributed, not authenticated. Call agent_offline on shutdown.")
+    @server.tool(description="Mark a registered agent online; call once on start or after an hour of inactivity. Then use open_conversation/send_message/poll_messages. Returns the human owners of this Clothesline, who may join your conversations. Presence is attributed, not authenticated. Call agent_offline on shutdown.")
     async def agent_online(harness_id: str, agent_id: str) -> dict:
         await anyio.to_thread.run_sync(bus.online, harness_id, agent_id)
-        return {"online": True, "heartbeat_after_seconds": HEARTBEAT_AFTER, "stale_after_seconds": STALE_AFTER}
+        return {"online": True, "heartbeat_after_seconds": HEARTBEAT_AFTER, "stale_after_seconds": STALE_AFTER,
+                "owners": await anyio.to_thread.run_sync(public_owners)}
+
+    @server.tool(description=f"Publish what an online agent is working on, shown on the Clothesline homepage. Send a plain summary of about 15 words (at most {MAX_STATUS} characters) every 5 turns or when your focus changes. Signing off clears it. Never include secrets.")
+    async def set_status(harness_id: str, agent_id: str, status: str) -> dict:
+        await anyio.to_thread.run_sync(bus.set_status, harness_id, agent_id, status)
+        return {"status_message": " ".join(status.split())}
 
     @server.tool(description="Keep an online agent active after up to 15 minutes of inactivity; send/poll/ack calls also refresh presence. After one hour without contact the agent becomes stale and must call agent_online again.")
     async def agent_heartbeat(harness_id: str, agent_id: str) -> dict:
         await anyio.to_thread.run_sync(bus.heartbeat, harness_id, agent_id)
         return {"online": True}
 
-    @server.tool(description="Sign an agent off when its harness exits. Direct messages remain queued while offline; broadcast messages only go to agents online when sent. Rejoin using agent_online.")
+    @server.tool(description="Sign an agent off when its harness exits; this clears its status message. Direct messages remain queued while offline; broadcast messages only go to agents online when sent. Rejoin using agent_online.")
     async def agent_offline(harness_id: str, agent_id: str) -> dict:
         return {"signed_off": await anyio.to_thread.run_sync(bus.offline, harness_id, agent_id)}
 
@@ -88,14 +125,49 @@ def create_app(config: Config, store: Store | None = None):
     def render(name, **context):
         return HTMLResponse(TEMPLATES.get_template(name).render(**context))
 
+    def same_origin(request: Request) -> bool:
+        """Browsers send Origin on form posts; rejecting foreign ones blocks cross-site requests to this port."""
+        return request.headers.get("origin") == f"{request.url.scheme}://{request.headers.get('host')}"
+
+    def home() -> dict:
+        everyone = bus.agents(include_inactive=True)
+        online = [agent for agent in everyone if agent["status"] == "online"]
+        threads = bus.agent_conversations([agent["id"] for agent in online])
+        return {"online": [{**agent, "conversations": threads[agent["id"]]} for agent in online],
+                "offline": [agent for agent in everyone if agent["status"] != "online"][:20],
+                "recent": bus.conversations(0, 20)["conversations"], "owners": bus.owners()}
+
     @server.custom_route("/", methods=["GET"])
     async def dashboard(request: Request):
-        with store.connect() as db:
-            counts = {table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-                      for table in ("agents", "conversations", "messages")}
-            recent = [dict(row) for row in db.execute("SELECT id,title,created_at FROM conversations ORDER BY created_at DESC LIMIT 30")]
-        return render("dashboard.html", counts=counts, recent=recent,
-                      agents=await anyio.to_thread.run_sync(bus.agents))
+        return render("dashboard.html", **await anyio.to_thread.run_sync(home))
+
+    @server.custom_route("/profile", methods=["GET", "POST"])
+    async def profile_page(request: Request):
+        error = None
+        if request.method == "POST":
+            if not same_origin(request):
+                return PlainTextResponse("Cross-origin request refused", status_code=403)
+            form = await request.form()
+            try:
+                await anyio.to_thread.run_sync(bus.save_owner, str(form.get("name", "")),
+                                               str(form.get("about", "")), str(form.get("owner_id", "")) or None)
+                return RedirectResponse("/profile", status_code=303)
+            except ValueError as exc:
+                error = str(exc)
+        return render("profile.html", owners=await anyio.to_thread.run_sync(bus.owners), error=error)
+
+    @server.custom_route("/conversations/{conversation_id}/messages", methods=["POST"])
+    async def post_message(request: Request):
+        if not same_origin(request):
+            return PlainTextResponse("Cross-origin request refused", status_code=403)
+        conversation_id = request.path_params["conversation_id"]
+        form = await request.form()
+        try:
+            await anyio.to_thread.run_sync(bus.owner_send, str(form.get("owner_id", "")), conversation_id,
+                                           str(form.get("client_message_id", "")), str(form.get("body", "")))
+        except ValueError as exc:
+            return PlainTextResponse(str(exc), status_code=400)
+        return RedirectResponse(f"/conversations/{conversation_id}#compose", status_code=303)
 
     @server.custom_route("/agents", methods=["GET"])
     async def agents_page(request: Request):
@@ -125,7 +197,11 @@ def create_app(config: Config, store: Store | None = None):
         except ValueError:
             after_id = 0
         conversation = await anyio.to_thread.run_sync(bus.conversation, request.path_params["conversation_id"], after_id)
-        return render("conversation.html", conversation=conversation) if conversation else PlainTextResponse("Not found", status_code=404)
+        if not conversation:
+            return PlainTextResponse("Not found", status_code=404)
+        # A fresh ID per page load lets the bus drop a resubmitted form instead of duplicating it.
+        return render("conversation.html", conversation=conversation, client_message_id=uid(),
+                      owners=await anyio.to_thread.run_sync(bus.owners))
 
     @server.custom_route("/config", methods=["GET"])
     async def config_page(request: Request):

@@ -47,7 +47,8 @@ def test_session_lifecycle_toggles_presence_and_reuses_identity(config):
 
 def test_prompt_surfaces_unacknowledged_messages_until_acked(config):
     handle(config, event("SessionStart"))
-    assert handle(config, event("UserPromptSubmit")) is None
+    first = handle(config, event("UserPromptSubmit"))["hookSpecificOutput"]["additionalContext"]
+    assert "set_status" in first and "unacknowledged" not in first
     send_to_session(config, "please review")
     for _ in range(2):  # at-least-once: redelivered until acknowledged
         context = handle(config, event("UserPromptSubmit"))["hookSpecificOutput"]["additionalContext"]
@@ -123,3 +124,30 @@ def test_poll_event_ignores_the_tool_use_throttle(config):
     send_to_session(config, "timer")
     assert "timer" in handle(config, event("Poll"), "omp")["hookSpecificOutput"]["additionalContext"]
     assert "timer" in handle(config, event("Poll"), "omp")["hookSpecificOutput"]["additionalContext"]
+
+
+def test_status_reminder_on_first_prompt_and_every_fifth_after(config):
+    handle(config, event("SessionStart"))
+    reminded = [turn for turn in range(1, 12) if handle(config, event("UserPromptSubmit"))]
+    assert reminded == [1, 6, 11]
+    # Each reminder names its turn, so hosts that drop repeated text (the OMP extension) still deliver it.
+    handle(config, event("SessionEnd"))
+    handle(config, event("SessionStart"))
+    assert "turn 1" in handle(config, event("UserPromptSubmit"))["hookSpecificOutput"]["additionalContext"]
+
+
+def test_owners_are_introduced_and_their_messages_labelled(config):
+    handle(config, event("SessionStart"))
+    store = Store(config.database)
+    bus = MessageBus(store)
+    owner = bus.save_owner("Kevin", "Prefers plain language")
+    with store.connect() as db:
+        agent = db.execute("SELECT id,harness_id FROM agents WHERE external_id='claude-session:s1'").fetchone()
+    bus.set_status(agent["harness_id"], agent["id"], "Writing hook tests")
+    conversation = bus.open_conversation(agent["harness_id"], agent["id"], "Status check")
+    bus.owner_send(owner, conversation, "form-1", "How is it going?")
+    start = handle(config, event("SessionStart"))["hookSpecificOutput"]["additionalContext"]
+    assert "Kevin" in start and "Prefers plain language" in start
+    assert "from human owner Kevin" in start and "How is it going?" in start
+    handle(config, event("SessionEnd"))
+    assert bus.agents(include_inactive=True)[0]["status_message"] is None

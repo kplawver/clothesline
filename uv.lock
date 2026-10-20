@@ -143,11 +143,12 @@ wheels = [
 
 [[package]]
 name = "clothesline"
-version = "0.7.2"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },
     { name = "mcp" },
+    { name = "python-multipart" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -165,6 +166,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "mcp", specifier = ">=2.2,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16" },
     { name = "starlette", specifier = ">=0.46,<2" },
     { name = "uvicorn", specifier = ">=0.34,<1" },

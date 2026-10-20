@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% block body %}<h1>Owner profiles</h1>
+<p>Agents see these when they come online and on every message you post, so tell them who you are and how you like to work. Profiles are attributed, not authenticated: anyone who can reach this port can post as them.</p>
+{% if error %}<p class="notice">{{ error }}</p>{% endif %}
+{% for owner in owners %}<form method="post" action="/profile"><input type="hidden" name="owner_id" value="{{ owner.id }}">
+<label>Name<input name="name" value="{{ owner.name }}" maxlength="100" required></label>
+<label>About you<textarea name="about" rows="4" maxlength="2000">{{ owner.about }}</textarea></label><button type="submit">Save</button></form>{% endfor %}
+<h2>{% if owners %}Add another owner{% else %}Create your profile{% endif %}</h2>
+<form method="post" action="/profile"><label>Name<input name="name" maxlength="100" required></label>
+<label>About you<textarea name="about" rows="4" maxlength="2000" placeholder="e.g. Staff engineer; prefers small PRs and plain language."></textarea></label><button type="submit">Create</button></form>
+{% endblock %}
