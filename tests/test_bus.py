@@ -1,14 +1,16 @@
 import json
+import sqlite3
 import time
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from clothesline import identity
 from clothesline.app import create_app
 from clothesline.bus import MessageBus
 from clothesline.config import Config
-from clothesline.storage import Store
+from clothesline.storage import SCHEMA_VERSION, Store
 
 
 @pytest.fixture
@@ -25,11 +27,11 @@ def actors(tmp_path):
     return store, bus, (first, sender), (second, receiver), (second, third)
 
 
-def test_schema_is_version_one_and_reopens_without_migration(tmp_path):
+def test_schema_is_current_and_reopens_without_migration(tmp_path):
     path = tmp_path / "existing.sqlite3"
     store = Store(path)
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert path.stat().st_mode & 0o777 == 0o600
     assert path.parent.stat().st_mode & 0o777 == 0o700
     reopened = Store(path)
@@ -41,6 +43,64 @@ def test_schema_is_version_one_and_reopens_without_migration(tmp_path):
         db.execute("PRAGMA user_version=99")
     with pytest.raises(ValueError, match="Unsupported database version"):
         Store(path)
+
+
+def test_version_one_database_gains_status_and_creator_columns(tmp_path):
+    path = tmp_path / "v1.sqlite3"
+    db = sqlite3.connect(path)
+    db.executescript(identity.IDENTITY_SCHEMA + """
+        CREATE TABLE agent_presence (agent_id TEXT PRIMARY KEY REFERENCES agents(id), online_at REAL NOT NULL,
+          last_seen_at REAL NOT NULL, offline_at REAL);
+        CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, project_id TEXT REFERENCES projects(id),
+          session_id TEXT, created_at REAL NOT NULL);
+        INSERT INTO harnesses VALUES ('h','key','Zed',0);
+        INSERT INTO agents VALUES ('a','h','main',NULL,0);
+        INSERT INTO conversations VALUES ('c','Before upgrade',NULL,NULL,0);
+        PRAGMA user_version=1;""")
+    db.close()
+    bus = MessageBus(Store(path))
+    bus.online("h", "a")
+    bus.set_status("h", "a", "Upgraded in place")
+    assert bus.agents()[0]["status_message"] == "Upgraded in place"
+    assert bus.conversation("c")["created_by"] is None
+    opened = bus.open_conversation("h", "a", "After upgrade")
+    assert bus.agent_conversations(["a"])["a"][0]["id"] == opened
+
+
+def test_status_message_is_published_and_cleared_on_sign_off(actors):
+    _, bus, (h1, sender), _, _ = actors
+    bus.set_status(h1, sender, "  Reviewing the\nmigration   plan  ")
+    assert next(a for a in bus.agents() if a["id"] == sender)["status_message"] == "Reviewing the migration plan"
+    for bad in ("   ", "x" * 201):
+        with pytest.raises(ValueError):
+            bus.set_status(h1, sender, bad)
+    bus.offline(h1, sender)
+    assert next(a for a in bus.agents(True) if a["id"] == sender)["status_message"] is None
+    with pytest.raises(ValueError, match="offline"):
+        bus.set_status(h1, sender, "Too late")
+
+
+def test_owner_message_reaches_every_participant_and_only_them(actors):
+    store, bus, (h1, sender), (h2, receiver), _ = actors
+    bystander_harness = store.register_harness("bystander", "Codex")
+    bystander = store.register_agent(bystander_harness, "codex-main")
+    bus.online(bystander_harness, bystander)
+    conversation = bus.open_conversation(h1, sender, "Plan")
+    bus.send(conversation, h1, sender, "q", "Question for you", receiver)
+    owner = bus.save_owner("Kevin", "Owns this machine")
+    posted = bus.owner_send(owner, conversation, "form-1", "Both of you: ship it")
+    assert bus.owner_send(owner, conversation, "form-1", "Both of you: ship it") == posted  # resubmitted form
+    for harness, agent in ((h1, sender), (h2, receiver)):
+        delivered = [m for m in bus.inbox(harness, agent)["messages"] if m["id"] == posted]
+        assert delivered and delivered[0]["owner_name"] == "Kevin"
+    assert bus.inbox(bystander_harness, bystander)["messages"] == []
+    assert bus.conversation(conversation)["messages"][-1]["owner_name"] == "Kevin"
+    assert {c["id"] for c in bus.agent_conversations([receiver])[receiver]} == {conversation}
+    owner_agent = bus.owners()[0]["agent_id"]
+    with pytest.raises(ValueError, match="browser"):  # an MCP client cannot impersonate the owner
+        bus.online(store.register_harness("clothesline:owners", "Clothesline"), owner_agent)
+    with pytest.raises(ValueError):
+        bus.owner_send("nobody", conversation, "form-2", "Who am I?")
 
 
 def test_session_reference_is_opaque_and_unvalidated(actors):
@@ -147,6 +207,24 @@ def test_mcp_tools_and_browser(actors, tmp_path):
         assert "A harmless inbox test" in client.get("/conversations?q=harmless").text
         tool("ack_message", {"harness_id": h2, "agent_id": receiver, "message_id": sent})
         assert tool("poll_messages", {"harness_id": h2, "agent_id": receiver})["messages"] == []
+
+        tool("set_status", {"harness_id": h2, "agent_id": receiver, "status": "Reviewing the UI test"})
+        assert "Reviewing the UI test" in client.get("/").text
+        assert client.post("/profile", data={"name": "Mallory"}).status_code == 403  # no Origin
+        assert client.post("/profile", data={"name": "Mallory"},
+                           headers={"Origin": "http://evil.example"}).status_code == 403
+        origin = {"Origin": "http://127.0.0.1:19004"}
+        assert client.post("/profile", data={"name": "Kevin", "about": "Owner"}, headers=origin,
+                           follow_redirects=False).status_code == 303
+        assert tool("agent_online", {"harness_id": h1, "agent_id": sender})["owners"][0]["name"] == "Kevin"
+        owner_id = MessageBus(store).owners()[0]["id"]
+        form = {"owner_id": owner_id, "client_message_id": "page-1", "body": "Owner says hello"}
+        assert client.post(f"/conversations/{conv}/messages", data=form).status_code == 403
+        assert client.post(f"/conversations/{conv}/messages", data=form, headers=origin,
+                           follow_redirects=False).status_code == 303
+        inbox = tool("poll_messages", {"harness_id": h2, "agent_id": receiver})["messages"]
+        assert inbox[0]["body"] == "Owner says hello" and inbox[0]["owner_name"] == "Kevin"
+        assert "Owner says hello" in client.get(f"/conversations/{conv}").text
 
 
 def test_plugin_and_marketplace_manifests():

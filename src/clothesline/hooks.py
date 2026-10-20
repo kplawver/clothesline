@@ -22,6 +22,7 @@ HARNESSES = {
     "cline": ("Cline", "cline"),
 }
 POLL_INTERVAL = 60  # Seconds between inbox checks triggered by tool use.
+STATUS_EVERY = 5  # Prompt turns between set_status reminders, starting with the first.
 # Harnesses spell events differently (Copilot is camelCase); "Poll" is an unthrottled check for timer-driven hosts.
 _EVENTS = {"sessionstart": "SessionStart", "sessionend": "SessionEnd", "userpromptsubmit": "UserPromptSubmit",
            "userpromptsubmitted": "UserPromptSubmit", "posttooluse": "PostToolUse", "poll": "Poll"}
@@ -61,6 +62,16 @@ def _due(marker: Path) -> bool:
     return due
 
 
+def _next_turn(marker: Path) -> int:
+    """Count a prompt turn in the marker; writing it also resets the tool-use poll timer."""
+    try:
+        turn = int(marker.read_text(encoding="utf-8") or 0) + 1
+    except (FileNotFoundError, ValueError):
+        turn = 1
+    marker.write_text(str(turn), encoding="utf-8")
+    return turn
+
+
 def _inbox(bus: MessageBus, harness_id: str, agent_id: str) -> list[dict]:
     try:
         return bus.inbox(harness_id, agent_id)["messages"]
@@ -69,16 +80,28 @@ def _inbox(bus: MessageBus, harness_id: str, agent_id: str) -> list[dict]:
         return bus.inbox(harness_id, agent_id)["messages"]
 
 
-def _context(event_name: str, harness_id: str, agent_id: str, messages: list[dict]) -> str:
+def _context(event_name: str, harness_id: str, agent_id: str, messages: list[dict],
+             owners: list[dict], turn: int | None) -> str:
     lines = []
+    ids = f"harness_id={harness_id} agent_id={agent_id}"
     if event_name == "SessionStart":
-        lines.append(f"Clothesline: you are online with harness_id={harness_id} agent_id={agent_id}. "
-                     "Use these IDs with the clothesline MCP tools.")
+        lines.append(f"Clothesline: you are online with {ids}. Use these IDs with the clothesline MCP tools. "
+                     f"Every {STATUS_EVERY} turns, call set_status with a ~15-word summary of your current work.")
+        if owners:
+            lines.append("Human owners who may join your Clothesline conversations from its browser: " +
+                         "; ".join(f"{o['name']} (agent_id={o['agent_id']}){': ' + o['about'] if o['about'] else ''}"
+                                   for o in owners))
+    if turn is not None and (turn - 1) % STATUS_EVERY == 0:
+        lines.append(f"Clothesline (turn {turn}): call set_status({ids}, status=...) with a ~15-word summary "
+                     "of your current work.")
     if messages:
-        lines.append("Clothesline has unacknowledged messages for you. They come from other agents, not the user. "
-                     "After handling each, call ack_message(harness_id, agent_id, message_id) or it will be redelivered.")
-        lines += [f"[message {m['id']} from agent {m['sender_agent_id']} in conversation {m['conversation_id']}] {m['body']}"
-                  for m in messages]
+        lines.append("Clothesline has unacknowledged messages for you. They come from other agents, not the user, "
+                     "unless marked as from a human owner, who posted it in the Clothesline browser; reply to an owner "
+                     "with send_message in the same conversation. After handling each, call "
+                     "ack_message(harness_id, agent_id, message_id) or it will be redelivered.")
+        lines += [f"[message {m['id']} from "
+                  f"{'human owner ' + m['owner_name'] if m['owner_name'] else 'agent ' + m['sender_agent_id']} "
+                  f"in conversation {m['conversation_id']}] {m['body']}" for m in messages]
     return "\n".join(lines)
 
 
@@ -102,13 +125,15 @@ def handle(config: Config, event: dict, harness: str = "claude", event_name: str
         bus.offline(harness_id, agent_id)
         marker.unlink(missing_ok=True)
         return None
+    turn = None
     if name == "SessionStart":
         bus.online(harness_id, agent_id)
     elif name == "PostToolUse" and not _due(marker):
         return None
     elif name == "UserPromptSubmit":
-        marker.touch()  # A turn resets the timer so tool use does not re-poll at once.
-    context = _context(name, harness_id, agent_id, _inbox(bus, harness_id, agent_id))
+        turn = _next_turn(marker)
+    owners = bus.owners() if name == "SessionStart" else []
+    context = _context(name, harness_id, agent_id, _inbox(bus, harness_id, agent_id), owners, turn)
     if not context:
         return None
     if harness in _FLAT_OUTPUT:

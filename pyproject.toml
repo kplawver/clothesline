@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clothesline"
-version = "0.7.2"
+version = "0.8.0"
 description = "Durable local messaging between coding agents"
 license = "MIT"
 requires-python = ">=3.12"
@@ -13,6 +13,7 @@ dependencies = [
   "starlette>=0.46,<2",
   "uvicorn>=0.34,<1",
   "jinja2>=3.1,<4",
+  "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]

@@ -9,11 +9,15 @@ from clothesline import identity
 MESSAGE_BUS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_presence (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id), online_at REAL NOT NULL,
-  last_seen_at REAL NOT NULL, offline_at REAL
+  last_seen_at REAL NOT NULL, offline_at REAL, status_message TEXT, status_at REAL
 );
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, project_id TEXT REFERENCES projects(id),
-  session_id TEXT, created_at REAL NOT NULL
+  session_id TEXT, created_at REAL NOT NULL, created_by TEXT REFERENCES agents(id)
+);
+CREATE TABLE IF NOT EXISTS owners (
+  id TEXT PRIMARY KEY, agent_id TEXT UNIQUE NOT NULL REFERENCES agents(id),
+  name TEXT NOT NULL, about TEXT NOT NULL, created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS conversations_recent ON conversations(created_at DESC);
 CREATE TABLE IF NOT EXISTS messages (
@@ -36,6 +40,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(body, message_id UNIN
 """
 
 MAX_SESSION_REFERENCE = 128
+SCHEMA_VERSION = 2
+# Columns added after version 1, applied to older databases on open.
+_V2_COLUMNS = (("agent_presence", "status_message", "TEXT"), ("agent_presence", "status_at", "REAL"),
+               ("conversations", "created_by", "TEXT REFERENCES agents(id)"))
 
 
 class Store:
@@ -49,11 +57,14 @@ class Store:
             self.path.chmod(0o600)
         with self.connect() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, SCHEMA_VERSION):
                 raise ValueError("Unsupported database version; upgrade Clothesline before opening it")
             db.executescript(identity.IDENTITY_SCHEMA)
             db.executescript(MESSAGE_BUS_SCHEMA)
-            db.execute("PRAGMA user_version=1")
+            for table, column, kind in _V2_COLUMNS:
+                if column not in {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.path.chmod(0o600)
 
     @contextmanager
