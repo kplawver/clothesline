@@ -13,11 +13,7 @@ jobs:
         include:
           - os: ubuntu-latest
           - os: macos-latest
-          # Best-effort x86_64 coverage until the formula is validated on real Intel hardware.
-          - os: macos-15-intel
-            experimental: true
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

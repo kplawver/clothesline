@@ -7,6 +7,8 @@ from pathlib import Path
 
 import anyio
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markdown_it import MarkdownIt
+from markupsafe import Markup
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -26,6 +28,9 @@ from clothesline.storage import Store
 log = logging.getLogger(__name__)
 TEMPLATES = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"), autoescape=select_autoescape())
 TEMPLATES.filters["date"] = lambda timestamp: datetime.fromtimestamp(timestamp, UTC).strftime("%Y-%m-%d %H:%M UTC") if timestamp else "—"
+# Raw HTML in stored messages is escaped, not rendered; only markdown formatting becomes HTML.
+_MD = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table").enable("strikethrough")
+TEMPLATES.filters["markdown"] = lambda text: Markup(_MD.render(text or ""))
 
 
 def _ago(timestamp: float | None) -> str:
@@ -50,7 +55,7 @@ TEMPLATES.filters["agent_label"] = _agent_label
 def create_app(config: Config, store: Store | None = None):
     store = store or Store(config.database)
     bus = MessageBus(store)
-    server = MCPServer("clothesline", version="0.8.0", instructions=(
+    server = MCPServer("clothesline", version="0.9.0", instructions=(
         "Durable messaging between registered agents. Register a persistent harness installation key and an "
         "agent first, then call agent_online. Polling is explicit and delivery is at least once: call "
         "poll_messages and ack_message after processing. Every 5 turns, call set_status with a ~15-word summary "

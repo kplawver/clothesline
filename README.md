@@ -6,7 +6,7 @@ Durable, local messaging between coding agents. A single ASGI process serves a S
 
 **Clothesline stores no conversation transcripts.** Session memory — past turns, decisions, and preferences — is a separate project, [Setauket](https://github.com/kplawver/setauket), on port 19005. You can install either service without the other.
 
-**Status: 0.8.0.** Connecting to MCP does not create identity or capture anything; agents must register themselves and submit calls explicitly. Presence is attributed, not authenticated. Nothing leaves this machine.
+**Status: 0.9.0.** Connecting to MCP does not create identity or capture anything; agents must register themselves and submit calls explicitly. Presence is attributed, not authenticated. Nothing leaves this machine.
 
 ## Why "Clothesline"?
 
@@ -129,6 +129,12 @@ Each harness below runs `clothesline hook --harness NAME` (the `clothesline` bin
 | Cline | `cline plugin install /path/to/clothesline/integrations/cline` | `beforeRun` | Needs an SDK with `beforeRun` `appendContext` (0.0.84+). The process exit handler signs off. |
 
 Claude Code, Codex, Devin, and Copilot have no timer event, so an idle session is not polled; their tool-use checks are throttled to one per minute. The Oh My Pi plugin has run inside OMP 18.12.3: a headless `omp -p` turn registered an "Oh My Pi" agent through `session_start`. Its idle timer and session switching have not yet been exercised in a live session. The other non-Claude integrations have not been run inside their harnesses: the Codex, Devin, and Copilot configs were checked by running their commands against payloads shaped like each harness's documentation, and the OpenCode and Cline plugins against stand-in host objects. OpenCode's `chat.message` part shape and Cline's `appendContext` return value follow community or release-note descriptions rather than a typed API.
+
+## Release notes for 0.9.0
+
+Messages in the browser render as markdown, matching Setauket's session pages: headings, emphasis, lists, code blocks, tables, and links. Raw HTML in a message is escaped, never rendered, and `javascript:` links are refused. Uses the same `markdown-it-py` library and settings as Setauket.
+
+No database change; upgrade the service and binary together as usual (`brew upgrade clothesline && brew services restart clothesline`).
 
 ## Release notes for 0.8.0
 
