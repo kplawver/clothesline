@@ -1,5 +1,6 @@
 """Harness lifecycle hooks: presence on session start/end, inbox polling between turns."""
 
+import json
 import os
 import re
 import tempfile
@@ -23,6 +24,8 @@ HARNESSES = {
 }
 POLL_INTERVAL = 60  # Seconds between inbox checks triggered by tool use.
 STATUS_EVERY = 5  # Prompt turns between set_status reminders, starting with the first.
+INJECTION_PAGE = 50  # Unacknowledged messages examined per hook run; bodies are shown once each.
+REMINDER_IDS = 10  # Message ids listed by the still-unacknowledged reminder.
 # Harnesses spell events differently (Copilot is camelCase); "Poll" is an unthrottled check for timer-driven hosts.
 _EVENTS = {"sessionstart": "SessionStart", "sessionend": "SessionEnd", "userpromptsubmit": "UserPromptSubmit",
            "userpromptsubmitted": "UserPromptSubmit", "posttooluse": "PostToolUse", "poll": "Poll"}
@@ -62,25 +65,31 @@ def _due(marker: Path) -> bool:
     return due
 
 
-def _next_turn(marker: Path) -> int:
-    """Count a prompt turn in the marker; writing it also resets the tool-use poll timer."""
+def _read_state(marker: Path) -> dict:
+    """Marker files hold {"turn": n, "injected": [ids]}; older versions held only the turn count."""
     try:
-        turn = int(marker.read_text(encoding="utf-8") or 0) + 1
+        raw = json.loads(marker.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
-        turn = 1
-    marker.write_text(str(turn), encoding="utf-8")
-    return turn
+        return {"turn": 0, "injected": []}
+    if isinstance(raw, int):
+        return {"turn": raw, "injected": []}
+    return {"turn": int(raw.get("turn", 0)),
+            "injected": [value for value in raw.get("injected", []) if isinstance(value, int)]}
 
 
-def _inbox(bus: MessageBus, harness_id: str, agent_id: str) -> list[dict]:
+def _write_state(marker: Path, state: dict) -> None:
+    marker.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _inbox(bus: MessageBus, harness_id: str, agent_id: str, limit: int) -> list[dict]:
     try:
-        return bus.inbox(harness_id, agent_id)["messages"]
+        return bus.inbox(harness_id, agent_id, 0, limit)["messages"]
     except ValueError:  # Offline or stale: rejoin once, then retry.
         bus.online(harness_id, agent_id)
-        return bus.inbox(harness_id, agent_id)["messages"]
+        return bus.inbox(harness_id, agent_id, 0, limit)["messages"]
 
 
-def _context(event_name: str, harness_id: str, agent_id: str, messages: list[dict],
+def _context(event_name: str, harness_id: str, agent_id: str, fresh: list[dict], stale: list[int],
              owners: list[dict], turn: int | None) -> str:
     lines = []
     ids = f"harness_id={harness_id} agent_id={agent_id}"
@@ -90,18 +99,25 @@ def _context(event_name: str, harness_id: str, agent_id: str, messages: list[dic
         if owners:
             lines.append("Human owners who may join your Clothesline conversations from its browser: " +
                          "; ".join(f"{o['name']} (agent_id={o['agent_id']}){': ' + o['about'] if o['about'] else ''}"
-                                   for o in owners))
+                               for o in owners))
     if turn is not None and (turn - 1) % STATUS_EVERY == 0:
         lines.append(f"Clothesline (turn {turn}): call set_status({ids}, status=...) with a ~15-word summary "
                      "of your current work.")
-    if messages:
+    if fresh:
         lines.append("Clothesline has unacknowledged messages for you. They come from other agents, not the user, "
                      "unless marked as from a human owner, who posted it in the Clothesline browser; reply to an owner "
                      "with send_message in the same conversation. After handling each, call "
-                     "ack_message(harness_id, agent_id, message_id) or it will be redelivered.")
+                     "ack_message(harness_id, agent_id, message_id). Each body is shown here once; poll_messages "
+                     "lists anything still unacknowledged.")
         lines += [f"[message {m['id']} from "
                   f"{'human owner ' + m['owner_name'] if m['owner_name'] else 'agent ' + m['sender_agent_id']} "
-                  f"in conversation {m['conversation_id']}] {m['body']}" for m in messages]
+                  f"in conversation {m['conversation_id']}] {m['body']}" for m in fresh]
+    if stale:
+        shown = ", ".join(str(message_id) for message_id in stale[:REMINDER_IDS])
+        more = f" and {len(stale) - REMINDER_IDS} more" if len(stale) > REMINDER_IDS else ""
+        lines.append(f"Clothesline reminder: still unacknowledged from earlier notices: {shown}{more}. Bodies are not "
+                     f"repeated; poll_messages({ids}, after_id=0) lists them again, and "
+                     "ack_message(harness_id, agent_id, message_id) clears each.")
     return "\n".join(lines)
 
 
@@ -125,15 +141,31 @@ def handle(config: Config, event: dict, harness: str = "claude", event_name: str
         bus.offline(harness_id, agent_id)
         marker.unlink(missing_ok=True)
         return None
+    state = _read_state(marker)
     turn = None
     if name == "SessionStart":
         bus.online(harness_id, agent_id)
     elif name == "PostToolUse" and not _due(marker):
         return None
     elif name == "UserPromptSubmit":
-        turn = _next_turn(marker)
+        state["turn"] += 1
+        turn = state["turn"]
     owners = bus.owners() if name == "SessionStart" else []
-    context = _context(name, harness_id, agent_id, _inbox(bus, harness_id, agent_id), owners, turn)
+    unacknowledged = _inbox(bus, harness_id, agent_id, INJECTION_PAGE)
+    injected = set(state["injected"])
+    fresh = [m for m in unacknowledged if m["id"] not in injected]
+    stale = [m["id"] for m in unacknowledged if m["id"] in injected]
+    # Each body is injected once per session; afterwards a one-line reminder carries the ids,
+    # so a busy agent is not reflooded with every old message on every poll.
+    injected.update(m["id"] for m in fresh)
+    updated = sorted(injected & {m["id"] for m in unacknowledged})
+    changed = bool(fresh) or updated != state["injected"]
+    state["injected"] = updated
+    # Writing the marker resets the tool-use poll timer, so only write when something changed;
+    # a quiet session start leaves the first PostToolUse poll immediately due.
+    if turn is not None or changed:
+        _write_state(marker, state)
+    context = _context(name, harness_id, agent_id, fresh, stale, owners, turn)
     if not context:
         return None
     if harness in _FLAT_OUTPUT:
