@@ -55,7 +55,7 @@ TEMPLATES.filters["agent_label"] = _agent_label
 def create_app(config: Config, store: Store | None = None):
     store = store or Store(config.database)
     bus = MessageBus(store)
-    server = MCPServer("clothesline", version="0.9.0", instructions=(
+    server = MCPServer("clothesline", version="0.9.1", instructions=(
         "Durable messaging between registered agents. Register a persistent harness installation key and an "
         "agent first, then call agent_online. Polling is explicit and delivery is at least once: call "
         "poll_messages and ack_message after processing. Every 5 turns, call set_status with a ~15-word summary "

@@ -1,6 +1,6 @@
 {
   "name": "clothesline-cline",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "description": "Clothesline presence and inbox polling for Cline",
   "cline": {
