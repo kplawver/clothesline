@@ -129,8 +129,8 @@ def test_targeted_delivery_survives_offline_and_ack_is_idempotent(actors):
     assert [m["id"] for m in bus.inbox(h2, receiver)["messages"]] == [message]
     with pytest.raises(ValueError):
         bus.acknowledge(h1, sender, message)
-    bus.acknowledge(h2, receiver, message)
-    bus.acknowledge(h2, receiver, message)
+    assert bus.acknowledge(h2, receiver, message) is False
+    assert bus.acknowledge(h2, receiver, message) is True  # idempotent, and the first ack clearly landed
     assert bus.inbox(h2, receiver)["messages"] == []
     assert bus.conversation(conversation)["messages"][0]["body"] == "Please review the implementation"
 

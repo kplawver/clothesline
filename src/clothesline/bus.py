@@ -204,14 +204,18 @@ class MessageBus:
             return {"messages": messages, "has_more": len(rows) > limit,
                     "next_cursor": messages[-1]["id"] if messages else after_id}
 
-    def acknowledge(self, harness_id: str, agent_id: str, message_id: int) -> None:
+    def acknowledge(self, harness_id: str, agent_id: str, message_id: int) -> bool:
+        """Mark one delivered message acknowledged; True means it was already acknowledged before this call."""
         with self.store.connect() as db:
             self._touch(db, harness_id, agent_id)
-            if not db.execute("SELECT 1 FROM message_deliveries WHERE recipient_agent_id=? AND message_id=?",
-                              (agent_id, message_id)).fetchone():
+            row = db.execute("SELECT acknowledged_at FROM message_deliveries WHERE recipient_agent_id=? AND message_id=?",
+                             (agent_id, message_id)).fetchone()
+            if row is None:
                 raise ValueError("Message was not delivered to this agent")
+            already = row["acknowledged_at"] is not None
             db.execute("UPDATE message_deliveries SET acknowledged_at=COALESCE(acknowledged_at,?) "
                        "WHERE recipient_agent_id=? AND message_id=?", (time.time(), agent_id, message_id))
+            return already
 
     def conversation(self, conversation_id: str, after_id: int = 0, limit: int = 30) -> dict | None:
         if after_id < 0 or not 1 <= limit <= 50:

@@ -27,7 +27,8 @@ def send_to_session(config, body, message_id="m1"):
     store = Store(config.database)
     bus = MessageBus(store)
     with store.connect() as db:
-        recipient = db.execute("SELECT id FROM agents").fetchone()[0]
+        # The session agent is the hook's registration; agent ids are random, so never rely on row order.
+        recipient = db.execute("SELECT id FROM agents WHERE external_id LIKE '%-session:%'").fetchone()[0]
     harness = store.register_harness("other", "Zed")
     sender = store.register_agent(harness, "zed")
     bus.online(harness, sender)
@@ -50,9 +51,12 @@ def test_prompt_surfaces_unacknowledged_messages_until_acked(config):
     first = handle(config, event("UserPromptSubmit"))["hookSpecificOutput"]["additionalContext"]
     assert "set_status" in first and "unacknowledged" not in first
     send_to_session(config, "please review")
-    for _ in range(2):  # at-least-once: redelivered until acknowledged
-        context = handle(config, event("UserPromptSubmit"))["hookSpecificOutput"]["additionalContext"]
-        assert "please review" in context and "ack_message" in context
+    # The body is injected once; later notices carry only the id, so context is not reflooded.
+    shown = handle(config, event("UserPromptSubmit"))["hookSpecificOutput"]["additionalContext"]
+    assert "please review" in shown and "ack_message" in shown
+    for _ in range(2):
+        reminder = handle(config, event("UserPromptSubmit"))["hookSpecificOutput"]["additionalContext"]
+        assert "please review" not in reminder and "still unacknowledged" in reminder and "notices: 1" in reminder
     store = Store(config.database)
     with store.connect() as db:
         agent = db.execute("SELECT id,harness_id FROM agents WHERE external_id='claude-session:s1'").fetchone()
@@ -68,7 +72,8 @@ def test_tool_use_polls_at_most_once_per_interval(config):
     marker = next((config.data_dir / "hook-polls").iterdir())
     old = time.time() - POLL_INTERVAL - 1
     os.utime(marker, (old, old))
-    assert "first" in handle(config, event("PostToolUse"))["hookSpecificOutput"]["additionalContext"]
+    reminder = handle(config, event("PostToolUse"))["hookSpecificOutput"]["additionalContext"]
+    assert "first" not in reminder and "still unacknowledged" in reminder
 
 
 def test_prompt_rejoins_after_session_end_without_new_start(config):
@@ -123,7 +128,28 @@ def test_poll_event_ignores_the_tool_use_throttle(config):
     handle(config, event("SessionStart"), "omp")
     send_to_session(config, "timer")
     assert "timer" in handle(config, event("Poll"), "omp")["hookSpecificOutput"]["additionalContext"]
-    assert "timer" in handle(config, event("Poll"), "omp")["hookSpecificOutput"]["additionalContext"]
+    reminder = handle(config, event("Poll"), "omp")["hookSpecificOutput"]["additionalContext"]
+    assert "timer" not in reminder and "still unacknowledged" in reminder
+
+
+def test_new_message_gets_its_body_and_old_ones_stay_compact(config):
+    handle(config, event("SessionStart"))
+    send_to_session(config, "older message")
+    assert "older message" in handle(config, event("Poll"))["hookSpecificOutput"]["additionalContext"]
+    send_to_session(config, "newer message", message_id="m2")
+    context = handle(config, event("Poll"))["hookSpecificOutput"]["additionalContext"]
+    # Only the new body appears; the unacked old one is named by id alone.
+    assert "newer message" in context and "older message" not in context
+    assert "still unacknowledged from earlier notices: 1" in context
+    # A marker from an older Clothesline (a plain turn count) degrades gracefully: bodies show once more.
+    marker = next((config.data_dir / "hook-polls").iterdir())
+    marker.write_text("3", encoding="utf-8")
+    legacy = handle(config, event("Poll"))["hookSpecificOutput"]["additionalContext"]
+    assert "older message" in legacy and "newer message" in legacy
+    # SessionEnd clears the marker, so a later session sees outstanding bodies once again.
+    handle(config, event("SessionEnd"))
+    revived = handle(config, event("SessionStart"))["hookSpecificOutput"]["additionalContext"]
+    assert "older message" in revived and "newer message" in revived
 
 
 def test_status_reminder_on_first_prompt_and_every_fifth_after(config):

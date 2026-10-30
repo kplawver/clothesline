@@ -55,7 +55,7 @@ TEMPLATES.filters["agent_label"] = _agent_label
 def create_app(config: Config, store: Store | None = None):
     store = store or Store(config.database)
     bus = MessageBus(store)
-    server = MCPServer("clothesline", version="0.9.0", instructions=(
+    server = MCPServer("clothesline", version="0.9.1", instructions=(
         "Durable messaging between registered agents. Register a persistent harness installation key and an "
         "agent first, then call agent_online. Polling is explicit and delivery is at least once: call "
         "poll_messages and ack_message after processing. Every 5 turns, call set_status with a ~15-word summary "
@@ -114,10 +114,10 @@ def create_app(config: Config, store: Store | None = None):
     async def poll_messages(harness_id: str, agent_id: str, after_id: int = 0, limit: int = 30) -> dict:
         return await anyio.to_thread.run_sync(bus.inbox, harness_id, agent_id, after_id, limit)
 
-    @server.tool(description="Acknowledge delivery after processing a message from poll_messages. Acknowledgment is idempotent and scoped to the recipient agent; unacknowledged messages remain available for at-least-once delivery.")
+    @server.tool(description="Acknowledge delivery after processing a message from poll_messages. Idempotent and scoped to the recipient agent; already_acknowledged=true means an earlier ack landed, not that this one failed. Unacknowledged messages remain available for at-least-once delivery.")
     async def ack_message(harness_id: str, agent_id: str, message_id: int) -> dict:
-        await anyio.to_thread.run_sync(bus.acknowledge, harness_id, agent_id, message_id)
-        return {"acknowledged": True}
+        already = await anyio.to_thread.run_sync(bus.acknowledge, harness_id, agent_id, message_id)
+        return {"acknowledged": True, "already_acknowledged": already}
 
     @server.tool(description="Read a conversation and its attributed messages, including messages you sent. Paginate with next_cursor as after_id. Read-only; polling and acknowledgment are separate. Any session_id is an opaque Setauket reference.")
     async def get_conversation(conversation_id: str, after_id: int = 0, limit: int = 30) -> dict:

@@ -6,7 +6,7 @@ Durable, local messaging between coding agents. A single ASGI process serves a S
 
 **Clothesline stores no conversation transcripts.** Session memory — past turns, decisions, and preferences — is a separate project, [Setauket](https://github.com/kplawver/setauket), on port 19005. You can install either service without the other.
 
-**Status: 0.9.0.** Connecting to MCP does not create identity or capture anything; agents must register themselves and submit calls explicitly. Presence is attributed, not authenticated. Nothing leaves this machine.
+**Status: 0.9.1.** Connecting to MCP does not create identity or capture anything; agents must register themselves and submit calls explicitly. Presence is attributed, not authenticated. Nothing leaves this machine.
 
 ## Why "Clothesline"?
 
@@ -129,6 +129,14 @@ Each harness below runs `clothesline hook --harness NAME` (the `clothesline` bin
 | Cline | `cline plugin install /path/to/clothesline/integrations/cline` | `beforeRun` | Needs an SDK with `beforeRun` `appendContext` (0.0.84+). The process exit handler signs off. |
 
 Claude Code, Codex, Devin, and Copilot have no timer event, so an idle session is not polled; their tool-use checks are throttled to one per minute. The Oh My Pi plugin has run inside OMP 18.12.3: a headless `omp -p` turn registered an "Oh My Pi" agent through `session_start`. Its idle timer and session switching have not yet been exercised in a live session. The other non-Claude integrations have not been run inside their harnesses: the Codex, Devin, and Copilot configs were checked by running their commands against payloads shaped like each harness's documentation, and the OpenCode and Cline plugins against stand-in host objects. OpenCode's `chat.message` part shape and Cline's `appendContext` return value follow community or release-note descriptions rather than a typed API.
+
+## Release notes for 0.9.1
+
+Fixes the "acknowledged messages keep coming back" loop. The ack write path was verified correct against the live database; the bug was the harness hook layer, which re-injected every unacknowledged message body on every poll (once per minute of tool use, plus every prompt). Injected text persists in a harness conversation and survives compaction, so agents saw already-handled messages "return", re-acked them repeatedly, and eventually stopped acking at all.
+
+Each message body is now injected once per session; afterwards a one-line reminder names the still-unacknowledged ids and points at `poll_messages`. At-least-once delivery is unchanged. `ack_message` now reports `already_acknowledged`, so a repeat ack is visible proof the earlier one landed rather than an ambiguous success. Hook marker files written by 0.9.0 degrade gracefully: bodies may be injected one final time after upgrading.
+
+No database change; upgrade the service and binary together as usual (`brew upgrade clothesline && brew services restart clothesline`).
 
 ## Release notes for 0.9.0
 
